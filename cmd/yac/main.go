@@ -1,4 +1,4 @@
-// Command yac is the CLI entry point for the YAC multi-agent system.
+// Command yac is the CLI entry point for the YAC agent runtime.
 package main
 
 import (
@@ -6,11 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/maccam912/yac"
 	"github.com/maccam912/yac/provider/openai"
 	"github.com/maccam912/yac/sandbox/docker"
 )
+
+const defaultRunTimeout = 45 * time.Second
 
 func main() {
 	apiKey := os.Getenv("OPENAI_API_KEY")
@@ -45,16 +50,21 @@ func main() {
 		}`),
 	}
 
-	handleTool := func(ctx context.Context, call yac.ToolCall) (string, error) {
+	handleTool := func(ctx context.Context, call yac.ToolCall) (*yac.ToolResult, error) {
 		switch call.Name {
 		case "run_python":
 			var args struct{ Code string }
 			if err := json.Unmarshal([]byte(call.Args), &args); err != nil {
-				return "", fmt.Errorf("parse args: %w", err)
+				return nil, fmt.Errorf("parse args: %w", err)
 			}
-			return sandbox.Exec(ctx, args.Code)
+			execResult, err := sandbox.Exec(ctx, args.Code)
+			return &yac.ToolResult{
+				Stdout:   execResult.Stdout,
+				Stderr:   execResult.Stderr,
+				ExitCode: execResult.ExitCode,
+			}, err
 		default:
-			return "", fmt.Errorf("unknown tool: %s", call.Name)
+			return nil, fmt.Errorf("unknown tool: %s", call.Name)
 		}
 	}
 
@@ -71,12 +81,19 @@ func main() {
 		Messages: []yac.Message{
 			{Role: yac.User, Content: prompt},
 		},
-		Tools:      []yac.ToolDef{pythonToolDef},
-		HandleTool: handleTool,
-		MaxTurns:   5,
+		Tools:              []yac.ToolDef{pythonToolDef},
+		HandleTool:         handleTool,
+		MaxTurns:           5,
+		MaxContextMessages: 20,
 	}
 
-	result, err := yac.ToolLoopAgent(context.Background(), run)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(ctx, defaultRunTimeout)
+	defer cancel()
+
+	result, err := yac.ToolLoopAgent(ctx, run)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

@@ -9,19 +9,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/maccam912/yac"
 )
 
-// DefaultBaseURL is the OpenAI chat completions base.
+// DefaultBaseURL is the OpenAI API base.
 const DefaultBaseURL = "https://api.openai.com/v1"
+
+// DefaultEndpointPath is the endpoint used for chat-style completions.
+const DefaultEndpointPath = "/chat/completions"
 
 // Provider talks to any OpenAI-compatible chat completions endpoint.
 type Provider struct {
-	APIKey  string
-	Model   string
-	BaseURL string       // defaults to DefaultBaseURL
-	Client  *http.Client // defaults to http.DefaultClient
+	APIKey       string
+	Model        string
+	BaseURL      string       // defaults to DefaultBaseURL
+	EndpointPath string       // defaults to DefaultEndpointPath
+	Client       *http.Client // defaults to http.DefaultClient
 }
 
 func (p *Provider) baseURL() string {
@@ -31,6 +36,13 @@ func (p *Provider) baseURL() string {
 	return DefaultBaseURL
 }
 
+func (p *Provider) endpointPath() string {
+	if p.EndpointPath != "" {
+		return p.EndpointPath
+	}
+	return DefaultEndpointPath
+}
+
 func (p *Provider) client() *http.Client {
 	if p.Client != nil {
 		return p.Client
@@ -38,7 +50,7 @@ func (p *Provider) client() *http.Client {
 	return http.DefaultClient
 }
 
-// Complete sends a chat completion request and returns the first choice.
+// Complete sends a completion request and returns the first choice.
 func (p *Provider) Complete(ctx context.Context, req *yac.Request) (*yac.Response, error) {
 	body := chatRequest{
 		Model:    p.Model,
@@ -57,8 +69,8 @@ func (p *Provider) Complete(ctx context.Context, req *yac.Request) (*yac.Respons
 		return nil, fmt.Errorf("openai: marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		p.baseURL()+"/chat/completions", bytes.NewReader(payload))
+	url := strings.TrimRight(p.baseURL(), "/") + p.endpointPath()
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("openai: create request: %w", err)
 	}
@@ -113,8 +125,6 @@ func (p *Provider) Complete(ctx context.Context, req *yac.Request) (*yac.Respons
 	}, nil
 }
 
-// --- wire types (OpenAI JSON schema) ---
-
 type chatRequest struct {
 	Model       string       `json:"model"`
 	Messages    []apiMessage `json:"messages"`
@@ -124,10 +134,10 @@ type chatRequest struct {
 }
 
 type apiMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content,omitempty"`
-	ToolCalls  []apiToolCall   `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Role       string        `json:"role"`
+	Content    string        `json:"content,omitempty"`
+	ToolCalls  []apiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
 }
 
 type apiToolCall struct {
@@ -142,8 +152,8 @@ type apiToolFunction struct {
 }
 
 type apiTool struct {
-	Type     string          `json:"type"`
-	Function apiToolFuncDef  `json:"function"`
+	Type     string         `json:"type"`
+	Function apiToolFuncDef `json:"function"`
 }
 
 type apiToolFuncDef struct {
@@ -165,8 +175,6 @@ type apiUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 }
-
-// --- converters ---
 
 func toAPIMsgs(msgs []yac.Message) []apiMessage {
 	out := make([]apiMessage, len(msgs))
