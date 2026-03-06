@@ -5,9 +5,12 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/maccam912/yac"
 )
 
 // DefaultImage is the Python Docker image used if none is specified.
@@ -26,14 +29,16 @@ func (s *Sandbox) image() string {
 }
 
 // Exec runs the given Python code in a fresh container and returns its
-// combined stdout+stderr output.
-func (s *Sandbox) Exec(ctx context.Context, code string) (string, error) {
+// stdout/stderr output.
+func (s *Sandbox) Exec(ctx context.Context, code string) (*yac.ExecResult, error) {
 	cmd := exec.CommandContext(ctx, "docker", "run",
 		"--rm",
 		"-i",
 		"--network", "none",
 		"--memory", "256m",
 		"--cpus", "1",
+		"--pids-limit", "64",
+		"--read-only",
 		s.image(),
 		"python", "-c", code,
 	)
@@ -42,13 +47,23 @@ func (s *Sandbox) Exec(ctx context.Context, code string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		// Include stderr in the output so the agent sees the error.
-		combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-		return combined, fmt.Errorf("docker exec: %w", err)
+	err := cmd.Run()
+	result := &yac.ExecResult{
+		Stdout: strings.TrimSpace(stdout.String()),
+		Stderr: strings.TrimSpace(stderr.String()),
 	}
 
-	return strings.TrimSpace(stdout.String()), nil
+	if err == nil {
+		return result, nil
+	}
+
+	result.ExitCode = 1
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.ExitCode = exitErr.ExitCode()
+	}
+
+	return result, fmt.Errorf("docker exec: %w", err)
 }
 
 // Close is a no-op for the basic Docker sandbox since each Exec call
