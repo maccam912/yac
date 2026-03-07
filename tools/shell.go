@@ -7,15 +7,26 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/maccam912/yac"
 )
 
-// Bash returns a tool that executes bash commands.
+// shellName returns the platform-appropriate shell executable and flag
+// used to run a command string.
+func shellName() (string, string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", "/C"
+	}
+	return "sh", "-c"
+}
+
+// Shell returns a tool that executes shell commands using the
+// platform's native shell (sh on Unix, cmd.exe on Windows).
 //
-// Requires the YAC_ENABLE_BASH environment variable to be set to any
+// Requires the YAC_ENABLE_SHELL environment variable to be set to any
 // non-empty value. The tool will only be available if this variable is
 // configured via the ShouldInclude check.
 //
@@ -24,21 +35,23 @@ import (
 //
 // Example:
 //
-//	os.Setenv("YAC_ENABLE_BASH", "1")
+//	os.Setenv("YAC_ENABLE_SHELL", "1")
 //	agent := yac.Agent{
-//	    Tools: yac.FilterTools([]*yac.Tool{tools.Bash()}),
+//	    Tools: yac.FilterTools([]*yac.Tool{tools.Shell()}),
 //	}
 //	reply, _ := agent.Send(ctx, "List the files in the current directory")
-func Bash() *yac.Tool {
+func Shell() *yac.Tool {
+	shell, flag := shellName()
+
 	return &yac.Tool{
-		Name:        "bash",
-		Description: "Execute a bash command and return its output (stdout and stderr). Use this to run shell commands, scripts, or system utilities. Commands run with a default timeout of 60 seconds.",
+		Name:        "shell",
+		Description: fmt.Sprintf("Execute a shell command and return its output (stdout and stderr). Uses %s on this platform. Commands run with a default timeout of 60 seconds.", shell),
 		Parameters: yac.Schema{
 			"type": "object",
 			"properties": map[string]any{
 				"command": map[string]any{
 					"type":        "string",
-					"description": "The bash command to execute, e.g. 'ls -la' or 'echo hello'",
+					"description": "The shell command to execute",
 				},
 				"timeout": map[string]any{
 					"type":        "number",
@@ -60,8 +73,8 @@ func Bash() *yac.Tool {
 				return "", fmt.Errorf("command is required")
 			}
 
-			if os.Getenv("YAC_ENABLE_BASH") == "" {
-				return "", fmt.Errorf("YAC_ENABLE_BASH environment variable not set")
+			if os.Getenv("YAC_ENABLE_SHELL") == "" {
+				return "", fmt.Errorf("YAC_ENABLE_SHELL environment variable not set")
 			}
 
 			timeout := 60 * time.Second
@@ -75,7 +88,7 @@ func Bash() *yac.Tool {
 			cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			cmd := exec.CommandContext(cmdCtx, "bash", "-c", params.Command)
+			cmd := exec.CommandContext(cmdCtx, shell, flag, params.Command)
 
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout
@@ -113,7 +126,7 @@ func Bash() *yac.Tool {
 			return result.String(), nil
 		},
 		ShouldInclude: func() bool {
-			return os.Getenv("YAC_ENABLE_BASH") != ""
+			return os.Getenv("YAC_ENABLE_SHELL") != ""
 		},
 	}
 }

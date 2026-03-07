@@ -29,7 +29,7 @@ func All() []*yac.Tool {
 		Calculator(),
 		WebRequest(),
 		SearXNG(),
-		Bash(),
+		Shell(),
 	}
 }
 

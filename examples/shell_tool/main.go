@@ -1,7 +1,7 @@
-// Example: Agent with the standard library bash tool.
+// Example: Agent with the standard library shell tool.
 //
-// Demonstrates using the bash tool to run shell commands. The tool
-// is gated by the YAC_ENABLE_BASH environment variable, which this
+// Demonstrates using the shell tool to run shell commands. The tool
+// is gated by the YAC_ENABLE_SHELL environment variable, which this
 // example sets automatically.
 //
 // Usage:
@@ -23,8 +23,8 @@ import (
 func main() {
 	_ = godotenv.Load()
 
-	// Enable the bash tool for this example.
-	os.Setenv("YAC_ENABLE_BASH", "1")
+	// Enable the shell tool for this example.
+	os.Setenv("YAC_ENABLE_SHELL", "1")
 
 	agent := yac.Agent{
 		Adapter: &yac.OpenAIAdapter{
@@ -32,8 +32,8 @@ func main() {
 			BaseURL: os.Getenv("YAC_BASE_URL"),
 			Model:   os.Getenv("YAC_MODEL"),
 		},
-		SystemPrompt: yac.StaticPrompt("You are a helpful assistant. Use the bash tool to run shell commands when needed."),
-		Tools:        yac.FilterTools([]*yac.Tool{tools.Bash()}),
+		SystemPrompt: yac.StaticPrompt("You are a helpful assistant. Use the shell tool to run shell commands when needed."),
+		Tools:        yac.FilterTools([]*yac.Tool{tools.Shell()}),
 	}
 
 	reply, err := agent.Send(context.Background(), "What operating system is this? Use uname to find out.")

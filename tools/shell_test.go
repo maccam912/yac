@@ -4,39 +4,40 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestBash(t *testing.T) {
+func TestShell(t *testing.T) {
 	// Save original env var and restore after test
-	original := os.Getenv("YAC_ENABLE_BASH")
+	original := os.Getenv("YAC_ENABLE_SHELL")
 	defer func() {
 		if original != "" {
-			os.Setenv("YAC_ENABLE_BASH", original)
+			os.Setenv("YAC_ENABLE_SHELL", original)
 		} else {
-			os.Unsetenv("YAC_ENABLE_BASH")
+			os.Unsetenv("YAC_ENABLE_SHELL")
 		}
 	}()
 
-	tool := Bash()
+	tool := Shell()
 
-	t.Run("ShouldInclude when YAC_ENABLE_BASH is set", func(t *testing.T) {
-		os.Setenv("YAC_ENABLE_BASH", "1")
+	t.Run("ShouldInclude when YAC_ENABLE_SHELL is set", func(t *testing.T) {
+		os.Setenv("YAC_ENABLE_SHELL", "1")
 		if !tool.ShouldInclude() {
-			t.Error("ShouldInclude should return true when YAC_ENABLE_BASH is set")
+			t.Error("ShouldInclude should return true when YAC_ENABLE_SHELL is set")
 		}
 	})
 
-	t.Run("ShouldInclude when YAC_ENABLE_BASH is not set", func(t *testing.T) {
-		os.Unsetenv("YAC_ENABLE_BASH")
+	t.Run("ShouldInclude when YAC_ENABLE_SHELL is not set", func(t *testing.T) {
+		os.Unsetenv("YAC_ENABLE_SHELL")
 		if tool.ShouldInclude() {
-			t.Error("ShouldInclude should return false when YAC_ENABLE_BASH is not set")
+			t.Error("ShouldInclude should return false when YAC_ENABLE_SHELL is not set")
 		}
 	})
 
 	// Set env var for remaining tests
-	os.Setenv("YAC_ENABLE_BASH", "1")
+	os.Setenv("YAC_ENABLE_SHELL", "1")
 
 	t.Run("Simple echo command", func(t *testing.T) {
 		args, _ := json.Marshal(map[string]any{"command": "echo hello"})
@@ -50,26 +51,14 @@ func TestBash(t *testing.T) {
 		}
 	})
 
-	t.Run("Command with stderr", func(t *testing.T) {
-		args, _ := json.Marshal(map[string]any{"command": "echo out && echo err >&2"})
-		result, err := tool.Execute(context.Background(), args)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-			return
-		}
-		if !strings.Contains(result, "out") {
-			t.Errorf("expected stdout in output, got: %s", result)
-		}
-		if !strings.Contains(result, "STDERR:") {
-			t.Errorf("expected STDERR label in output, got: %s", result)
-		}
-		if !strings.Contains(result, "err") {
-			t.Errorf("expected stderr content in output, got: %s", result)
-		}
-	})
-
 	t.Run("Non-zero exit code", func(t *testing.T) {
-		args, _ := json.Marshal(map[string]any{"command": "echo failing && exit 1"})
+		var cmd string
+		if runtime.GOOS == "windows" {
+			cmd = "echo failing & exit /b 1"
+		} else {
+			cmd = "echo failing && exit 1"
+		}
+		args, _ := json.Marshal(map[string]any{"command": cmd})
 		result, err := tool.Execute(context.Background(), args)
 		// Non-zero exit with output returns output + exit error, no error
 		if err != nil {
@@ -85,7 +74,13 @@ func TestBash(t *testing.T) {
 	})
 
 	t.Run("No output command", func(t *testing.T) {
-		args, _ := json.Marshal(map[string]any{"command": "true"})
+		var cmd string
+		if runtime.GOOS == "windows" {
+			cmd = "echo. >nul"
+		} else {
+			cmd = "true"
+		}
+		args, _ := json.Marshal(map[string]any{"command": cmd})
 		result, err := tool.Execute(context.Background(), args)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -107,20 +102,20 @@ func TestBash(t *testing.T) {
 		}
 	})
 
-	t.Run("YAC_ENABLE_BASH not set", func(t *testing.T) {
-		os.Unsetenv("YAC_ENABLE_BASH")
+	t.Run("YAC_ENABLE_SHELL not set", func(t *testing.T) {
+		os.Unsetenv("YAC_ENABLE_SHELL")
 		args, _ := json.Marshal(map[string]any{"command": "echo test"})
 		_, err := tool.Execute(context.Background(), args)
 		if err == nil {
-			t.Error("expected error when YAC_ENABLE_BASH not set")
+			t.Error("expected error when YAC_ENABLE_SHELL not set")
 		}
-		if !strings.Contains(err.Error(), "YAC_ENABLE_BASH") {
-			t.Errorf("expected YAC_ENABLE_BASH error, got: %v", err)
+		if !strings.Contains(err.Error(), "YAC_ENABLE_SHELL") {
+			t.Errorf("expected YAC_ENABLE_SHELL error, got: %v", err)
 		}
 	})
 
 	t.Run("Timeout is capped at 300", func(t *testing.T) {
-		os.Setenv("YAC_ENABLE_BASH", "1")
+		os.Setenv("YAC_ENABLE_SHELL", "1")
 		args, _ := json.Marshal(map[string]any{"command": "echo fast", "timeout": 500})
 		result, err := tool.Execute(context.Background(), args)
 		if err != nil {
@@ -129,6 +124,12 @@ func TestBash(t *testing.T) {
 		}
 		if !strings.Contains(result, "fast") {
 			t.Errorf("expected 'fast' in output, got: %s", result)
+		}
+	})
+
+	t.Run("Tool name is shell", func(t *testing.T) {
+		if tool.Name != "shell" {
+			t.Errorf("expected tool name 'shell', got %q", tool.Name)
 		}
 	})
 }

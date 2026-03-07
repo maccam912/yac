@@ -151,7 +151,7 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 	}
 
 	systemTemplate := template.Must(template.New("system").Parse("You are a helpful Telegram bot assistant. You can perform calculations, " +
-		"fetch web pages, search the web, run bash commands, and delegate independent tasks to run in parallel. " +
+		"fetch web pages, search the web, run shell commands, and delegate independent tasks to run in parallel. " +
 		"Keep your responses concise and well-formatted for a chat interface. " +
 		"When a user asks multiple independent questions, use the delegate tool " +
 		"to answer them in parallel. Today is {{.DayOfWeek}}, {{.DateTime}}"))

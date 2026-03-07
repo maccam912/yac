@@ -19,7 +19,7 @@ func TestAll(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	expected := []string{"calculator", "web_request", "searxng_search", "bash"}
+	expected := []string{"calculator", "web_request", "searxng_search", "shell"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("expected tool %q to be present", name)

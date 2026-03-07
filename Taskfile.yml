@@ -45,7 +45,7 @@ tasks:
       - go run ./examples/web_tools/
       - cmd: echo ""
       - cmd: echo "=== Smoke{{":"}} bash_tool ==="
-      - cmd: YAC_ENABLE_BASH=1 go run ./examples/bash_tool/
+      - cmd: YAC_ENABLE_SHELL=1 go run ./examples/shell_tool/
       - cmd: echo ""
       - cmd: echo "=== All smoke tests passed ==="
 
