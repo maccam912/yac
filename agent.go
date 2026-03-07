@@ -71,6 +71,10 @@ type Agent struct {
 //	reply, _ := agent.Send(ctx, "Get weather", yac.ForceToolUse("weather"))  // force tool
 //	reply, _ := agent.Send(ctx, "Just chat", yac.WithToolChoice(yac.None))   // no tools
 func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (Message, error) {
+	if a.Adapter == nil {
+		return Message{}, fmt.Errorf("agent has no adapter configured")
+	}
+
 	cfg := &sendConfig{}
 	for _, opt := range opts {
 		opt(cfg)
@@ -89,13 +93,20 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		toolChoice = "none"
 	}
 
-	// Add the user message to conversation history.
-	a.Messages = append(a.Messages, Message{Role: "user", Content: content})
+	// Work on a local copy of messages so that a.Messages is only
+	// updated when the turn completes successfully.  This prevents
+	// partial history pollution when an adapter call or tool lookup
+	// fails mid-turn.
+	pending := make([]Message, len(a.Messages), len(a.Messages)+2)
+	copy(pending, a.Messages)
+
+	// Add the user message to the local copy.
+	pending = append(pending, Message{Role: "user", Content: content})
 
 	// Tool-use loop.
 	for round := 0; round < maxToolRounds; round++ {
 		req := &ChatRequest{
-			Messages:   a.buildRequestMessages(),
+			Messages:   buildRequestMessages(a.SystemPrompt, pending),
 			Tools:      tools,
 			ToolChoice: toolChoice,
 		}
@@ -107,12 +118,13 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 
 		// No tool calls → final response.
 		if len(reply.ToolCalls) == 0 {
-			a.Messages = append(a.Messages, reply)
+			pending = append(pending, reply)
+			a.Messages = pending
 			return reply, nil
 		}
 
 		// Model wants to call tools — execute them.
-		a.Messages = append(a.Messages, reply)
+		pending = append(pending, reply)
 
 		for _, tc := range reply.ToolCalls {
 			tool := findTool(tools, tc.Function.Name)
@@ -126,7 +138,7 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 				result = fmt.Sprintf("Error: %v", err)
 			}
 
-			a.Messages = append(a.Messages, Message{
+			pending = append(pending, Message{
 				Role:       "tool",
 				Content:    result,
 				ToolCallID: tc.ID,
@@ -145,14 +157,14 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 
 // buildRequestMessages prepends the system prompt (if set) to the
 // conversation history.
-func (a *Agent) buildRequestMessages() []Message {
+func buildRequestMessages(systemPrompt func() string, messages []Message) []Message {
 	var msgs []Message
-	if a.SystemPrompt != nil {
+	if systemPrompt != nil {
 		msgs = append(msgs, Message{
 			Role:    "system",
-			Content: a.SystemPrompt(),
+			Content: systemPrompt(),
 		})
 	}
-	msgs = append(msgs, a.Messages...)
+	msgs = append(msgs, messages...)
 	return msgs
 }

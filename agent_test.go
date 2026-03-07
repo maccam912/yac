@@ -199,3 +199,42 @@ func TestSendUnknownTool(t *testing.T) {
 		t.Fatal("expected error for unknown tool")
 	}
 }
+
+func TestSendNilAdapter(t *testing.T) {
+	agent := Agent{} // zero-value, no adapter
+
+	_, err := agent.Send(context.Background(), "Hello")
+	if err == nil {
+		t.Fatal("expected error for nil adapter")
+	}
+	if err.Error() != "agent has no adapter configured" {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// failingAdapter always returns an error on SendMessage.
+type failingAdapter struct{}
+
+func (f *failingAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Message, error) {
+	return Message{}, fmt.Errorf("network error")
+}
+
+func TestSendDoesNotMutateHistoryOnError(t *testing.T) {
+	agent := Agent{Adapter: &failingAdapter{}}
+
+	// Seed the agent with one existing message.
+	agent.Messages = []Message{{Role: "assistant", Content: "Previous reply"}}
+
+	_, err := agent.Send(context.Background(), "This will fail")
+	if err == nil {
+		t.Fatal("expected error from failing adapter")
+	}
+
+	// History should be unchanged — the user message should NOT be committed.
+	if len(agent.Messages) != 1 {
+		t.Fatalf("expected 1 message (unchanged), got %d: %+v", len(agent.Messages), agent.Messages)
+	}
+	if agent.Messages[0].Content != "Previous reply" {
+		t.Errorf("existing history was mutated: %+v", agent.Messages)
+	}
+}
