@@ -1,0 +1,250 @@
+// Example: Telegram bot powered by a yac agent.
+//
+// Starts a Telegram bot that listens for messages and responds using
+// a yac agent with calculator and delegation tools. Each chat gets
+// its own agent with persistent conversation history.
+//
+// Setup:
+//
+//  1. Create a bot via @BotFather on Telegram and copy the token.
+//  2. Copy .env.example to .env and fill in your values.
+//  3. Run: go run ./examples/telegram_bot/
+//  4. Message your bot on Telegram.
+//
+// The .env.example is pre-configured for OpenRouter with gpt-oss-120b.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/joho/godotenv"
+	"github.com/maccam912/yac"
+	"github.com/maccam912/yac/tools"
+)
+
+// --- Telegram API types (minimal subset) ---
+
+type tgUpdate struct {
+	UpdateID int        `json:"update_id"`
+	Message  *tgMessage `json:"message"`
+}
+
+type tgMessage struct {
+	MessageID int    `json:"message_id"`
+	Chat      tgChat `json:"chat"`
+	Text      string `json:"text"`
+}
+
+type tgChat struct {
+	ID int64 `json:"id"`
+}
+
+type tgResponse struct {
+	OK     bool       `json:"ok"`
+	Result []tgUpdate `json:"result"`
+}
+
+// --- Telegram helpers ---
+
+func getUpdates(token string, offset int) ([]tgUpdate, error) {
+	resp, err := http.Get(fmt.Sprintf(
+		"https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30",
+		token, offset,
+	))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var tgResp tgResponse
+	if err := json.Unmarshal(body, &tgResp); err != nil {
+		return nil, err
+	}
+	if !tgResp.OK {
+		return nil, fmt.Errorf("telegram API error: %s", string(body))
+	}
+	return tgResp.Result, nil
+}
+
+func sendMessage(token string, chatID int64, text string) error {
+	// Telegram messages max out at 4096 chars. Split if needed.
+	for len(text) > 0 {
+		chunk := text
+		if len(chunk) > 4096 {
+			// Try to split at a newline boundary.
+			cut := strings.LastIndex(chunk[:4096], "\n")
+			if cut < 1 {
+				cut = 4096
+			}
+			chunk = text[:cut]
+			text = text[cut:]
+		} else {
+			text = ""
+		}
+
+		resp, err := http.PostForm(
+			fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token),
+			url.Values{
+				"chat_id": {strconv.FormatInt(chatID, 10)},
+				"text":    {chunk},
+			},
+		)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+	}
+	return nil
+}
+
+// --- Per-chat agent management ---
+
+type chatAgents struct {
+	mu     sync.Mutex
+	agents map[int64]*yac.Agent
+	cfg    agentConfig
+}
+
+type agentConfig struct {
+	adapter *yac.OpenAIAdapter
+	tools   []*yac.Tool
+}
+
+func newChatAgents(cfg agentConfig) *chatAgents {
+	return &chatAgents{
+		agents: make(map[int64]*yac.Agent),
+		cfg:    cfg,
+	}
+}
+
+func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+
+	if agent, ok := ca.agents[chatID]; ok {
+		return agent
+	}
+
+	agent := &yac.Agent{
+		Adapter: ca.cfg.adapter,
+		SystemPrompt: yac.StaticPrompt(
+			"You are a helpful Telegram bot assistant. You can perform calculations " +
+				"and delegate independent tasks to run in parallel. Keep your responses " +
+				"concise and well-formatted for a chat interface. " +
+				"When a user asks multiple independent questions, use the delegate tool " +
+				"to answer them in parallel.",
+		),
+		Tools:          ca.cfg.tools,
+		ContextLength:  8192,
+		AggressiveTrim: true,
+	}
+	ca.agents[chatID] = agent
+	return agent
+}
+
+func main() {
+	_ = godotenv.Load()
+
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		log.Fatal("TELEGRAM_BOT_TOKEN is required. Copy .env.example to .env and fill it in.")
+	}
+
+	adapter := &yac.OpenAIAdapter{
+		APIKey:  os.Getenv("YAC_API_KEY"),
+		BaseURL: os.Getenv("YAC_BASE_URL"),
+		Model:   os.Getenv("YAC_MODEL"),
+	}
+
+	// Build tools: calculator + delegate (subagents also get the calculator).
+	delegateTool := tools.Delegate(tools.DelegateConfig{
+		Adapter:  adapter,
+		Tools:    []*yac.Tool{tools.Calculator()},
+		MaxDepth: 2,
+	})
+	agentTools := []*yac.Tool{tools.Calculator(), delegateTool}
+
+	chats := newChatAgents(agentConfig{
+		adapter: adapter,
+		tools:   agentTools,
+	})
+
+	// Graceful shutdown on Ctrl+C.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	log.Printf("Bot started. Model: %s @ %s", adapter.Model, adapter.BaseURL)
+	log.Println("Send a message to your bot on Telegram. Press Ctrl+C to stop.")
+
+	offset := 0
+	for {
+		// Check for shutdown.
+		select {
+		case <-ctx.Done():
+			log.Println("Shutting down.")
+			return
+		default:
+		}
+
+		updates, err := getUpdates(token, offset)
+		if err != nil {
+			log.Printf("Error fetching updates: %v", err)
+			continue
+		}
+
+		for _, update := range updates {
+			offset = update.UpdateID + 1
+
+			if update.Message == nil || update.Message.Text == "" {
+				continue
+			}
+
+			chatID := update.Message.Chat.ID
+			text := update.Message.Text
+			log.Printf("[chat %d] User: %s", chatID, text)
+
+			// Handle /start and /reset commands.
+			if text == "/start" {
+				_ = sendMessage(token, chatID, "Hello! I'm a yac-powered assistant. Ask me anything, or try some math!")
+				continue
+			}
+			if text == "/reset" {
+				chats.mu.Lock()
+				delete(chats.agents, chatID)
+				chats.mu.Unlock()
+				_ = sendMessage(token, chatID, "Conversation reset. Fresh start!")
+				continue
+			}
+
+			agent := chats.getOrCreate(chatID)
+
+			reply, err := agent.Send(ctx, text)
+			if err != nil {
+				log.Printf("[chat %d] Error: %v", chatID, err)
+				_ = sendMessage(token, chatID, "Sorry, something went wrong. Try again.")
+				continue
+			}
+
+			log.Printf("[chat %d] Bot: %s", chatID, reply.Content)
+			if err := sendMessage(token, chatID, reply.Content); err != nil {
+				log.Printf("[chat %d] Failed to send reply: %v", chatID, err)
+			}
+		}
+	}
+}
