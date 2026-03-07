@@ -1,200 +1,201 @@
-package yac_test
+package yac
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
-
-	"github.com/maccam912/yac"
 )
 
-type mockProvider struct {
-	responses []*yac.Response
-	calls     int
+// mockAdapter records requests and returns preconfigured responses.
+type mockAdapter struct {
+	responses []Message
+	requests  []*ChatRequest
+	callIndex int
 }
 
-func (m *mockProvider) Complete(_ context.Context, _ *yac.Request) (*yac.Response, error) {
-	if m.calls >= len(m.responses) {
-		return nil, fmt.Errorf("no more mock responses")
+func (m *mockAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Message, error) {
+	m.requests = append(m.requests, req)
+	if m.callIndex >= len(m.responses) {
+		return Message{}, fmt.Errorf("no more mock responses (call %d)", m.callIndex)
 	}
-	resp := m.responses[m.calls]
-	m.calls++
+	resp := m.responses[m.callIndex]
+	m.callIndex++
 	return resp, nil
 }
 
-func TestSimpleAgent_ReturnsFinalMessage(t *testing.T) {
-	provider := &mockProvider{
-		responses: []*yac.Response{
-			{Message: yac.Message{Role: yac.Assistant, Content: "Hello!"}},
-		},
+func TestSendBasic(t *testing.T) {
+	mock := &mockAdapter{
+		responses: []Message{{Role: "assistant", Content: "Hello!"}},
 	}
+	agent := Agent{Adapter: mock}
 
-	run := &yac.Run{
-		Provider: provider,
-		System:   "You are terse.",
-		Messages: []yac.Message{{Role: yac.User, Content: "Hi"}},
-	}
-
-	got, err := yac.SimpleAgent(context.Background(), run)
+	reply, err := agent.Send(context.Background(), "Hi")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Send failed: %v", err)
 	}
-	if got != "Hello!" {
-		t.Errorf("got %q, want %q", got, "Hello!")
+	if reply.Content != "Hello!" {
+		t.Errorf("got %q, want %q", reply.Content, "Hello!")
+	}
+	if len(agent.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(agent.Messages))
+	}
+	if agent.Messages[0].Role != "user" || agent.Messages[1].Role != "assistant" {
+		t.Error("unexpected message roles")
 	}
 }
 
-func TestSimpleAgent_ExecutesToolCalls(t *testing.T) {
-	provider := &mockProvider{
-		responses: []*yac.Response{
-			{
-				Message: yac.Message{
-					Role: yac.Assistant,
-					ToolCalls: []yac.ToolCall{
-						{ID: "call_1", Name: "add", Args: `{"a":3,"b":4}`},
-					},
-				},
-			},
-			{Message: yac.Message{Role: yac.Assistant, Content: "7"}},
-		},
+func TestSendWithSystemPrompt(t *testing.T) {
+	mock := &mockAdapter{
+		responses: []Message{{Role: "assistant", Content: "I'm helpful!"}},
+	}
+	agent := Agent{
+		Adapter:      mock,
+		SystemPrompt: StaticPrompt("You are helpful."),
 	}
 
-	toolCalled := false
-	run := &yac.Run{
-		Provider: provider,
-		Tools: []yac.ToolDef{{
-			Name:       "add",
-			Parameters: []byte(`{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}`),
-		}},
-		HandleTool: func(_ context.Context, call yac.ToolCall) (*yac.ToolResult, error) {
-			toolCalled = true
-			if call.Name != "add" {
-				t.Errorf("tool name = %q, want %q", call.Name, "add")
+	_, err := agent.Send(context.Background(), "Hi")
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	req := mock.requests[0]
+	if req.Messages[0].Role != "system" || req.Messages[0].Content != "You are helpful." {
+		t.Error("system prompt not prepended correctly")
+	}
+}
+
+func TestSendWithToolCall(t *testing.T) {
+	greetTool := &Tool{
+		Name:       "greet",
+		Parameters: Schema{"type": "object"},
+		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Name string `json:"name"`
 			}
-			return &yac.ToolResult{Output: "7"}, nil
+			json.Unmarshal(args, &p)
+			return "Hello, " + p.Name + "!", nil
 		},
-		MaxTurns: 2,
 	}
 
-	got, err := yac.SimpleAgent(context.Background(), run)
+	mock := &mockAdapter{
+		responses: []Message{
+			// First: model calls tool.
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call_1", Type: "function", Function: FunctionCall{Name: "greet", Arguments: `{"name":"Alice"}`}},
+			}},
+			// Second: model gives final answer.
+			{Role: "assistant", Content: "I greeted Alice for you!"},
+		},
+	}
+
+	agent := Agent{Adapter: mock, Tools: []*Tool{greetTool}}
+	reply, err := agent.Send(context.Background(), "Say hi to Alice")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Send failed: %v", err)
 	}
-	if !toolCalled {
-		t.Error("expected tool handler to run")
+
+	if reply.Content != "I greeted Alice for you!" {
+		t.Errorf("got %q, want %q", reply.Content, "I greeted Alice for you!")
 	}
-	if got != "7" {
-		t.Errorf("got %q, want %q", got, "7")
+
+	// History: user, assistant(tool_call), tool(result), assistant(final)
+	if len(agent.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(agent.Messages))
+	}
+	if agent.Messages[2].Role != "tool" || agent.Messages[2].Content != "Hello, Alice!" {
+		t.Errorf("tool result mismatch: %+v", agent.Messages[2])
+	}
+	if agent.Messages[2].ToolCallID != "call_1" {
+		t.Errorf("tool_call_id mismatch: got %q", agent.Messages[2].ToolCallID)
 	}
 }
 
-func TestToolLoopAgent_ToolThenFinal(t *testing.T) {
-	provider := &mockProvider{
-		responses: []*yac.Response{
-			// First response: requests tool call
-			{
-				Message: yac.Message{
-					Role: yac.Assistant,
-					ToolCalls: []yac.ToolCall{
-						{ID: "call_1", Name: "add", Args: `{"a":3,"b":4}`},
-					},
-				},
-			},
-			// Second response: final answer
-			{
-				Message: yac.Message{
-					Role:    yac.Assistant,
-					Content: "The answer is 7.",
-				},
-			},
-		},
-	}
+func TestSendWithToolOverride(t *testing.T) {
+	defaultTool := &Tool{Name: "default_tool"}
+	overrideTool := &Tool{Name: "override_tool"}
 
-	toolCalled := false
-	run := &yac.Run{
-		Provider: provider,
-		Messages: []yac.Message{{Role: yac.User, Content: "What is 3+4?"}},
-		Tools: []yac.ToolDef{{
-			Name:       "add",
-			Parameters: []byte(`{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"]}`),
-		}},
-		HandleTool: func(_ context.Context, call yac.ToolCall) (*yac.ToolResult, error) {
-			toolCalled = true
-			if call.Name != "add" {
-				t.Errorf("tool name = %q, want %q", call.Name, "add")
-			}
-			return &yac.ToolResult{Output: "7"}, nil
-		},
+	mock := &mockAdapter{
+		responses: []Message{{Role: "assistant", Content: "Done"}},
 	}
+	agent := Agent{Adapter: mock, Tools: []*Tool{defaultTool}}
 
-	result, err := yac.ToolLoopAgent(context.Background(), run)
+	_, err := agent.Send(context.Background(), "Hello", WithTools(overrideTool))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Send failed: %v", err)
 	}
-	if !toolCalled {
-		t.Error("HandleTool was never called")
-	}
-	if result != "The answer is 7." {
-		t.Errorf("got %q, want %q", result, "The answer is 7.")
-	}
-	if provider.calls != 2 {
-		t.Errorf("provider called %d times, want 2", provider.calls)
+
+	req := mock.requests[0]
+	if len(req.Tools) != 1 || req.Tools[0].Name != "override_tool" {
+		t.Errorf("expected override_tool, got %v", req.Tools)
 	}
 }
 
-func TestToolLoopAgent_ExceedsMaxTurns(t *testing.T) {
-	// Provider always returns tool calls, never a final answer.
-	infiniteToolCalls := make([]*yac.Response, 20)
-	for i := range infiniteToolCalls {
-		infiniteToolCalls[i] = &yac.Response{
-			Message: yac.Message{
-				Role:      yac.Assistant,
-				ToolCalls: []yac.ToolCall{{ID: fmt.Sprintf("call_%d", i), Name: "noop", Args: "{}"}},
-			},
-		}
+func TestSendWithToolChoiceNone(t *testing.T) {
+	mock := &mockAdapter{
+		responses: []Message{{Role: "assistant", Content: "No tools"}},
+	}
+	agent := Agent{Adapter: mock, Tools: []*Tool{{Name: "some_tool"}}}
+
+	_, err := agent.Send(context.Background(), "Chat", WithToolChoice(None))
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
 	}
 
-	provider := &mockProvider{responses: infiniteToolCalls}
+	req := mock.requests[0]
+	if len(req.Tools) != 0 {
+		t.Errorf("expected no tools, got %d", len(req.Tools))
+	}
+	if req.ToolChoice != "none" {
+		t.Errorf("expected 'none', got %v", req.ToolChoice)
+	}
+}
 
-	run := &yac.Run{
-		Provider: provider,
-		Messages: []yac.Message{{Role: yac.User, Content: "loop forever"}},
-		Tools:    []yac.ToolDef{{Name: "noop", Parameters: []byte(`{"type":"object"}`)}},
-		HandleTool: func(_ context.Context, _ yac.ToolCall) (*yac.ToolResult, error) {
-			return &yac.ToolResult{Output: "ok"}, nil
+func TestSendToolError(t *testing.T) {
+	failTool := &Tool{
+		Name:       "fail",
+		Parameters: Schema{"type": "object"},
+		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
+			return "", fmt.Errorf("something went wrong")
 		},
-		MaxTurns: 3,
 	}
 
-	_, err := yac.ToolLoopAgent(context.Background(), run)
+	mock := &mockAdapter{
+		responses: []Message{
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call_1", Type: "function", Function: FunctionCall{Name: "fail", Arguments: `{}`}},
+			}},
+			{Role: "assistant", Content: "Tool failed, sorry."},
+		},
+	}
+
+	agent := Agent{Adapter: mock, Tools: []*Tool{failTool}}
+	reply, err := agent.Send(context.Background(), "Do it")
+	if err != nil {
+		t.Fatalf("Send should not error (error goes to model): %v", err)
+	}
+
+	// Error should be sent to model as tool result.
+	if agent.Messages[2].Content != "Error: something went wrong" {
+		t.Errorf("expected error in tool result, got %q", agent.Messages[2].Content)
+	}
+	if reply.Content != "Tool failed, sorry." {
+		t.Errorf("got %q", reply.Content)
+	}
+}
+
+func TestSendUnknownTool(t *testing.T) {
+	mock := &mockAdapter{
+		responses: []Message{
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call_1", Type: "function", Function: FunctionCall{Name: "nonexistent", Arguments: `{}`}},
+			}},
+		},
+	}
+
+	agent := Agent{Adapter: mock}
+	_, err := agent.Send(context.Background(), "Do something")
 	if err == nil {
-		t.Fatal("expected error for exceeding max turns")
-	}
-}
-
-func TestToolLoopAgent_RequiresHandleToolWhenToolReturned(t *testing.T) {
-	run := &yac.Run{
-		Provider: &mockProvider{responses: []*yac.Response{{Message: yac.Message{Role: yac.Assistant, ToolCalls: []yac.ToolCall{{ID: "1", Name: "noop", Args: "{}"}}}}}},
-		Tools:    []yac.ToolDef{{Name: "noop", Parameters: []byte(`{"type":"object"}`)}},
-	}
-
-	_, err := yac.ToolLoopAgent(context.Background(), run)
-	if err == nil {
-		t.Fatal("expected error when HandleTool is nil")
-	}
-}
-
-func TestToolLoopAgent_TrimsContextMessages(t *testing.T) {
-	provider := &mockProvider{responses: []*yac.Response{{Message: yac.Message{Role: yac.Assistant, Content: "ok"}}}}
-	run := &yac.Run{
-		Provider:           provider,
-		System:             "sys",
-		Messages:           []yac.Message{{Role: yac.User, Content: "1"}, {Role: yac.User, Content: "2"}, {Role: yac.User, Content: "3"}},
-		MaxContextMessages: 3,
-	}
-
-	_, err := yac.ToolLoopAgent(context.Background(), run)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal("expected error for unknown tool")
 	}
 }

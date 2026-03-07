@@ -1,0 +1,59 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the project
+    cmds:
+      - go build ./...
+
+  test:
+    desc: Run unit tests only
+    cmds:
+      - go test -v ./...
+
+  test-integration:
+    desc: Run integration tests (needs local llama-server)
+    cmds:
+      - go test -v -tags=integration ./...
+
+  smoke:
+    desc: Run all examples as smoke tests (needs local llama-server)
+    cmds:
+      # !! Add new examples here — see AGENTS.md !!
+      - cmd: echo "=== Smoke{{":"}} static_prompt ==="
+      - go run ./examples/static_prompt/
+      - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} dynamic_prompt ==="
+      - go run ./examples/dynamic_prompt/
+      - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} cached_prompt ==="
+      - go run ./examples/cached_prompt/
+      - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} tool_use ==="
+      - go run ./examples/tool_use/
+      - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} calculator ==="
+      - go run ./examples/calculator/
+      - cmd: echo ""
+      - cmd: echo "=== All smoke tests passed ==="
+
+  test-all:
+    desc: Run all tests + smoke tests
+    cmds:
+      - task: test-integration
+      - task: smoke
+
+  fmt:
+    desc: Format all Go files
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: Run static analysis
+    cmds:
+      - go vet ./...
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - go clean ./...
