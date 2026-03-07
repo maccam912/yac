@@ -321,6 +321,92 @@ func TestStripToolClustersMultipleClusters(t *testing.T) {
 	}
 }
 
+func TestTrimMessagesPreservesTrailingToolCluster(t *testing.T) {
+	// Reproduce the bug: when the only remaining conversation messages
+	// are a trailing tool cluster (assistant+tool_calls, tool result),
+	// trimMessages used to remove them entirely, leaving only the
+	// system message. The model would then see no context at all.
+	msgs := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Look up the latest news"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: FunctionCall{
+				Name:      "search",
+				Arguments: `{"query":"latest news"}`,
+			}},
+		}},
+		{Role: "tool", Content: "Search results: lots of news content here that is quite long...", ToolCallID: "call_1"},
+	}
+
+	// Use a tiny limit so trimming is forced.
+	trimmed := trimMessages(msgs, 20, 0)
+
+	// Must preserve: system, user question, tool cluster.
+	hasToolResult := false
+	hasToolCall := false
+	hasUser := false
+	for _, m := range trimmed {
+		if m.Role == "tool" {
+			hasToolResult = true
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			hasToolCall = true
+		}
+		if m.Role == "user" {
+			hasUser = true
+		}
+	}
+	if !hasToolResult {
+		t.Error("trailing tool result was trimmed — model won't see tool output")
+	}
+	if !hasToolCall {
+		t.Error("trailing tool-call assistant message was trimmed — orphaned tool result")
+	}
+	if !hasUser {
+		t.Error("user message was trimmed — model won't know what question to answer")
+	}
+	if len(trimmed) != 4 {
+		t.Errorf("expected 4 messages (system + user + tool cluster), got %d", len(trimmed))
+	}
+}
+
+func TestTrimMessagesPreservesLastUserMessage(t *testing.T) {
+	// When older history gets trimmed but a user question + tool exchange
+	// remains, the user message must be kept even if over budget.
+	msgs := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "Old question"},
+		{Role: "assistant", Content: "Old answer"},
+		{Role: "user", Content: "Look up the latest news from iran"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: FunctionCall{
+				Name:      "search",
+				Arguments: `{"query":"iran news"}`,
+			}},
+		}},
+		{Role: "tool", Content: "Search results: many results here...", ToolCallID: "call_1"},
+	}
+
+	// Tiny limit forces trimming of older messages.
+	trimmed := trimMessages(msgs, 30, 0)
+
+	// Old Q&A should be trimmed, but user question + tool cluster preserved.
+	roles := make([]string, len(trimmed))
+	for i, m := range trimmed {
+		roles[i] = m.Role
+	}
+
+	hasUser := false
+	for _, m := range trimmed {
+		if m.Role == "user" && m.Content == "Look up the latest news from iran" {
+			hasUser = true
+		}
+	}
+	if !hasUser {
+		t.Errorf("last user message should be preserved, got roles: %v", roles)
+	}
+}
+
 func TestSendWithAggressiveTrim(t *testing.T) {
 	greetTool := &Tool{
 		Name:       "greet",

@@ -145,3 +145,50 @@ func TestFindTool(t *testing.T) {
 		t.Error("expected nil for unknown tool")
 	}
 }
+
+func TestFilterTools(t *testing.T) {
+	alwaysIncluded := &Tool{Name: "always"}
+	conditionalTrue := &Tool{
+		Name:          "conditional_true",
+		ShouldInclude: func() bool { return true },
+	}
+	conditionalFalse := &Tool{
+		Name:          "conditional_false",
+		ShouldInclude: func() bool { return false },
+	}
+
+	tools := []*Tool{alwaysIncluded, conditionalTrue, conditionalFalse}
+	filtered := FilterTools(tools)
+
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(filtered))
+	}
+
+	// Check that we got the right tools
+	names := make(map[string]bool)
+	for _, tool := range filtered {
+		names[tool.Name] = true
+	}
+
+	if !names["always"] {
+		t.Error("expected 'always' to be included")
+	}
+	if !names["conditional_true"] {
+		t.Error("expected 'conditional_true' to be included")
+	}
+	if names["conditional_false"] {
+		t.Error("expected 'conditional_false' to be excluded")
+	}
+}
+
+func TestFilterToolsEmpty(t *testing.T) {
+	var tools []*Tool
+	filtered := FilterTools(tools)
+
+	if filtered == nil {
+		t.Error("expected non-nil slice")
+	}
+	if len(filtered) != 0 {
+		t.Errorf("expected empty slice, got %d tools", len(filtered))
+	}
+}

@@ -108,6 +108,29 @@ func trimMessages(messages []Message, maxTokens int, toolTokens int) []Message {
 				removed++
 			}
 		}
+
+		// Never remove more messages than would leave the
+		// conversation empty — the trailing cluster (the tool
+		// exchange we're still processing) must be preserved.
+		if removed >= len(conversation) {
+			break
+		}
+
+		// Don't remove the last remaining user message — without
+		// it the model loses the question it's trying to answer.
+		if conversation[0].Role == "user" {
+			hasOtherUser := false
+			for j := removed; j < len(conversation); j++ {
+				if conversation[j].Role == "user" {
+					hasOtherUser = true
+					break
+				}
+			}
+			if !hasOtherUser {
+				break
+			}
+		}
+
 		conversation = conversation[removed:]
 	}
 

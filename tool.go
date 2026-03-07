@@ -65,6 +65,18 @@ type Tool struct {
 	// the raw JSON arguments and returns the result as a string.
 	// The context supports cancellation and timeouts.
 	Execute func(ctx context.Context, args json.RawMessage) (string, error)
+
+	// ShouldInclude is an optional function that determines whether this
+	// tool should be included in an agent's tool set. Return true to include
+	// the tool, false to exclude it. Useful for tools that require specific
+	// environment variables or runtime conditions.
+	//
+	// Example:
+	//
+	//	ShouldInclude: func() bool {
+	//	    return os.Getenv("SEARXNG_URL") != ""
+	//	}
+	ShouldInclude func() bool
 }
 
 // ToolChoice controls whether and how the model uses tools on a given turn.
@@ -152,4 +164,23 @@ func findTool(tools []*Tool, name string) *Tool {
 		}
 	}
 	return nil
+}
+
+// FilterTools returns only the tools that should be included based on their
+// ShouldInclude function. Tools without a ShouldInclude function are always
+// included.
+//
+// Example:
+//
+//	allTools := []*Tool{searchTool, calcTool, optionalTool}
+//	enabled := FilterTools(allTools)
+//	agent.Tools = enabled
+func FilterTools(tools []*Tool) []*Tool {
+	result := make([]*Tool, 0, len(tools))
+	for _, t := range tools {
+		if t.ShouldInclude == nil || t.ShouldInclude() {
+			result = append(result, t)
+		}
+	}
+	return result
 }

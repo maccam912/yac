@@ -1,8 +1,9 @@
 // Example: Telegram bot powered by a yac agent.
 //
 // Starts a Telegram bot that listens for messages and responds using
-// a yac agent with calculator and delegation tools. Each chat gets
-// its own agent with persistent conversation history.
+// a yac agent with all standard tools (calculator, web request, search,
+// delegation). Each chat gets its own agent with persistent conversation
+// history.
 //
 // Setup:
 //
@@ -10,6 +11,7 @@
 //  2. Copy .env.example to .env and fill in your values.
 //  3. Run: go run ./examples/telegram_bot/
 //  4. Message your bot on Telegram.
+//  5. (Optional) Set SEARXNG_URL to enable web search.
 //
 // The .env.example is pre-configured for OpenRouter with gpt-oss-120b.
 package main
@@ -27,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/maccam912/yac"
@@ -57,11 +61,16 @@ type tgResponse struct {
 
 // --- Telegram helpers ---
 
-func getUpdates(token string, offset int) ([]tgUpdate, error) {
-	resp, err := http.Get(fmt.Sprintf(
+func getUpdates(ctx context.Context, token string, offset int) ([]tgUpdate, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(
 		"https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30",
 		token, offset,
-	))
+	), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -141,15 +150,21 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 		return agent
 	}
 
+	systemTemplate := template.Must(template.New("system").Parse("You are a helpful Telegram bot assistant. You can perform calculations, " +
+		"fetch web pages, search the web, run bash commands, and delegate independent tasks to run in parallel. " +
+		"Keep your responses concise and well-formatted for a chat interface. " +
+		"When a user asks multiple independent questions, use the delegate tool " +
+		"to answer them in parallel. Today is {{.DayOfWeek}}, {{.DateTime}}"))
+
 	agent := &yac.Agent{
 		Adapter: ca.cfg.adapter,
-		SystemPrompt: yac.StaticPrompt(
-			"You are a helpful Telegram bot assistant. You can perform calculations " +
-				"and delegate independent tasks to run in parallel. Keep your responses " +
-				"concise and well-formatted for a chat interface. " +
-				"When a user asks multiple independent questions, use the delegate tool " +
-				"to answer them in parallel.",
-		),
+		SystemPrompt: yac.TemplatePrompt(systemTemplate, func() any {
+			now := time.Now()
+			return map[string]string{
+				"DateTime":  now.Format("2006-01-02 15:04:05"),
+				"DayOfWeek": now.Weekday().String(),
+			}
+		}),
 		Tools:          ca.cfg.tools,
 		ContextLength:  8192,
 		AggressiveTrim: true,
@@ -172,13 +187,10 @@ func main() {
 		Model:   os.Getenv("YAC_MODEL"),
 	}
 
-	// Build tools: calculator + delegate (subagents also get the calculator).
-	delegateTool := tools.Delegate(tools.DelegateConfig{
-		Adapter:  adapter,
-		Tools:    []*yac.Tool{tools.Calculator()},
-		MaxDepth: 2,
-	})
-	agentTools := []*yac.Tool{tools.Calculator(), delegateTool}
+	// Build tools: all standard tools + delegate.
+	// FilterTools will exclude SearXNG if SEARXNG_URL isn't set.
+	allTools := tools.AllWithDelegate(adapter, 2)
+	agentTools := yac.FilterTools(allTools)
 
 	chats := newChatAgents(agentConfig{
 		adapter: adapter,
@@ -202,7 +214,7 @@ func main() {
 		default:
 		}
 
-		updates, err := getUpdates(token, offset)
+		updates, err := getUpdates(ctx, token, offset)
 		if err != nil {
 			log.Printf("Error fetching updates: %v", err)
 			continue
@@ -234,6 +246,16 @@ func main() {
 
 			agent := chats.getOrCreate(chatID)
 
+			// Debug: log conversation state before sending
+			log.Printf("[chat %d] Agent has %d messages in history before Send", chatID, len(agent.Messages))
+			for i, msg := range agent.Messages {
+				preview := msg.Content
+				if len(preview) > 50 {
+					preview = preview[:50] + "..."
+				}
+				log.Printf("[chat %d]   Msg %d: [%s] %s", chatID, i, msg.Role, preview)
+			}
+
 			reply, err := agent.Send(ctx, text)
 			if err != nil {
 				log.Printf("[chat %d] Error: %v", chatID, err)
@@ -241,6 +263,8 @@ func main() {
 				continue
 			}
 
+			// Debug: log conversation state after sending
+			log.Printf("[chat %d] Agent has %d messages in history after Send", chatID, len(agent.Messages))
 			log.Printf("[chat %d] Bot: %s", chatID, reply.Content)
 			if err := sendMessage(token, chatID, reply.Content); err != nil {
 				log.Printf("[chat %d] Failed to send reply: %v", chatID, err)

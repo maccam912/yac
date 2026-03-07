@@ -41,6 +41,12 @@ tasks:
       - cmd: echo "=== Smoke{{":"}} delegation ==="
       - go run ./examples/delegation/
       - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} web_tools ==="
+      - go run ./examples/web_tools/
+      - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} bash_tool ==="
+      - cmd: YAC_ENABLE_BASH=1 go run ./examples/bash_tool/
+      - cmd: echo ""
       - cmd: echo "=== All smoke tests passed ==="
 
   test-all:

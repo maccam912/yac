@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 )
 
 // OpenAIAdapter connects to OpenAI or any OpenAI-compatible API
@@ -67,6 +68,25 @@ type apiError struct {
 // SendMessage implements the Adapter interface. It posts the conversation
 // to the chat completions endpoint and returns the model's reply.
 func (a *OpenAIAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Message, error) {
+	// Debug logging (can be disabled by setting YAC_DEBUG_API=false)
+	if os.Getenv("YAC_DEBUG_API") != "false" {
+		fmt.Fprintf(os.Stderr, "[YAC_DEBUG] Sending %d messages to API (model: %s)\n", len(req.Messages), a.Model)
+		for i, msg := range req.Messages {
+			preview := msg.Content
+			if len(preview) > 60 {
+				preview = preview[:60] + "..."
+			}
+			toolCallInfo := ""
+			if len(msg.ToolCalls) > 0 {
+				toolCallInfo = fmt.Sprintf(" +%d tool_calls", len(msg.ToolCalls))
+			}
+			if msg.ToolCallID != "" {
+				toolCallInfo = fmt.Sprintf(" (tool_result for %s)", msg.ToolCallID)
+			}
+			fmt.Fprintf(os.Stderr, "[YAC_DEBUG]   %d. [%s] %s%s\n", i, msg.Role, preview, toolCallInfo)
+		}
+	}
+
 	// Convert Tool definitions to API format.
 	var apiTools []apiToolDef
 	for _, t := range req.Tools {
