@@ -35,6 +35,9 @@ tasks:
       - cmd: echo "=== Smoke{{":"}} calculator ==="
       - go run ./examples/calculator/
       - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} context_management ==="
+      - go run ./examples/context_management/
+      - cmd: echo ""
       - cmd: echo "=== All smoke tests passed ==="
 
   test-all:

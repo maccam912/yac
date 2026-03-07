@@ -37,6 +37,13 @@ type Agent struct {
 	// backing model can handle in a single request.
 	ContextLength int
 
+	// AggressiveTrim, when true, strips completed tool-call clusters
+	// (assistant tool_calls + tool results) from the conversation
+	// history on every request. This keeps the context lean since
+	// tool exchanges are typically bulky and rarely useful once the
+	// model has processed their results.
+	AggressiveTrim bool
+
 	// Adapter connects the agent to a real LLM backend.
 	Adapter Adapter
 
@@ -103,10 +110,28 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 	// Add the user message to the local copy.
 	pending = append(pending, Message{Role: "user", Content: content})
 
+	// Pre-compute token budget used by tool definitions so we can
+	// account for it when trimming conversation history.
+	toolTokens := EstimateToolTokens(tools)
+
 	// Tool-use loop.
 	for round := 0; round < maxToolRounds; round++ {
+		reqMessages := buildRequestMessages(a.SystemPrompt, pending)
+
+		// Aggressive mode: strip completed tool-call clusters to
+		// keep the context as lean as possible.
+		if a.AggressiveTrim {
+			reqMessages = StripToolClusters(reqMessages)
+		}
+
+		// If a context length is set, trim older messages so the
+		// request stays within the model's context window.
+		if a.ContextLength > 0 {
+			reqMessages = trimMessages(reqMessages, a.ContextLength, toolTokens)
+		}
+
 		req := &ChatRequest{
-			Messages:   buildRequestMessages(a.SystemPrompt, pending),
+			Messages:   reqMessages,
 			Tools:      tools,
 			ToolChoice: toolChoice,
 		}
