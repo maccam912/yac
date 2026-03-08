@@ -62,6 +62,7 @@ Single Go module (`github.com/maccam912/yac`). External dependencies: `godotenv`
 - `tracing.go` — `InitTracing(ctx, serviceName)` sets up OTLP exporter for OpenTelemetry. Spans are created automatically in `Agent.Send()`, `OpenAIAdapter.SendMessage()`, tool executions, and delegate subagents.
 - `logging.go` — Always-on pretty stderr logging with ANSI colors and tree-style indentation. Nesting depth is propagated via `context.Context` using `DepthFromContext()`/`ContextWithDepth()`. Delegate subagents automatically log at increased depth.
 - `ClearContext(agent)` — tool that resets conversation history, keeping only the last user message.
+- `ResetConversation(ResetConversationConfig)` — saves important context as memories and then clears conversation history. Combines memory creation and context clearing into a single atomic operation. Requires agent pointer; memory dir is optional.
 
 **Key design pattern:** `Agent.Send()` works on a local copy of `Messages` and only commits to `a.Messages` on success, preventing history pollution from mid-turn failures.
 

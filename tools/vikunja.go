@@ -118,15 +118,15 @@ func ListVikunjaTasks() *yac.Tool {
 			}
 
 			var tasks []struct {
-				ID       int    `json:"id"`
-				Title    string `json:"title"`
-				Project  struct {
+				ID      int    `json:"id"`
+				Title   string `json:"title"`
+				Project struct {
 					Title string `json:"title"`
 				} `json:"project"`
 				ProjectID int    `json:"project_id"`
-				Done     bool   `json:"done"`
-				Priority int    `json:"priority"`
-				DueDate  string `json:"due_date"`
+				Done      bool   `json:"done"`
+				Priority  int    `json:"priority"`
+				DueDate   string `json:"due_date"`
 			}
 			if err := json.Unmarshal(data, &tasks); err != nil {
 				return "", fmt.Errorf("failed to parse tasks: %w", err)
