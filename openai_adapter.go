@@ -50,8 +50,10 @@ type chatRequest struct {
 }
 
 type chatResponse struct {
-	Choices []chatChoice `json:"choices"`
-	Error   *apiError    `json:"error,omitempty"`
+	Choices    []chatChoice `json:"choices"`
+	Completion string       `json:"completion,omitempty"`
+	Reasoning  string       `json:"reasoning,omitempty"`
+	Error      *apiError    `json:"error,omitempty"`
 }
 
 type chatChoice struct {
@@ -149,7 +151,17 @@ func (a *OpenAIAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Mess
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return Message{}, fmt.Errorf("no choices in response")
+		// Some OpenAI-compatible gateways return top-level completion
+		// fields instead of choices[]. Prefer completion and fall back to
+		// reasoning if completion is blank.
+		content := chatResp.Completion
+		if content == "" {
+			content = chatResp.Reasoning
+		}
+		if content == "" {
+			return Message{}, fmt.Errorf("no choices in response")
+		}
+		return Message{Role: "assistant", Content: content}, nil
 	}
 
 	return chatResp.Choices[0].Message, nil
