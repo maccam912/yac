@@ -3,9 +3,11 @@ package yac
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // --- Context key for agent nesting depth ---
@@ -42,6 +44,87 @@ const (
 // concurrent subagents.
 var logMu sync.Mutex
 
+// --- Ring buffer for log introspection ---
+
+// LogBuffer is a thread-safe ring buffer that stores recent log lines.
+type LogBuffer struct {
+	mu    sync.Mutex
+	lines []string
+	pos   int
+	cap   int
+	total int
+}
+
+// NewLogBuffer creates a ring buffer that holds up to capacity lines.
+func NewLogBuffer(capacity int) *LogBuffer {
+	if capacity <= 0 {
+		capacity = 200
+	}
+	return &LogBuffer{
+		lines: make([]string, capacity),
+		cap:   capacity,
+	}
+}
+
+func (lb *LogBuffer) add(line string) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.lines[lb.pos] = line
+	lb.pos = (lb.pos + 1) % lb.cap
+	lb.total++
+}
+
+// Recent returns the most recent n lines (or fewer if not enough exist).
+func (lb *LogBuffer) Recent(n int) []string {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	count := lb.total
+	if count > lb.cap {
+		count = lb.cap
+	}
+	if n > count {
+		n = count
+	}
+	if n <= 0 {
+		return nil
+	}
+
+	result := make([]string, n)
+	start := (lb.pos - n + lb.cap) % lb.cap
+	for i := 0; i < n; i++ {
+		result[i] = lb.lines[(start+i)%lb.cap]
+	}
+	return result
+}
+
+// Write implements io.Writer so the buffer can be used with log.SetOutput.
+// Each Write call is treated as one log line (trailing newline stripped).
+func (lb *LogBuffer) Write(p []byte) (n int, err error) {
+	line := strings.TrimRight(string(p), "\n")
+	if line != "" {
+		lb.add(line)
+	}
+	return len(p), nil
+}
+
+// DefaultLogBuffer is the global log buffer used by yac's logging functions.
+// It holds the 200 most recent log lines.
+var DefaultLogBuffer = NewLogBuffer(200)
+
+// LogWriter returns an io.Writer that writes to both stderr and the
+// DefaultLogBuffer. Use it with log.SetOutput to capture standard log
+// output for agent introspection.
+func LogWriter() io.Writer {
+	return io.MultiWriter(os.Stderr, DefaultLogBuffer)
+}
+
+// bufferPlain writes a plain-text (no ANSI) log line to the default buffer.
+func bufferPlain(format string, args ...any) {
+	line := fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
+	DefaultLogBuffer.add(line)
+}
+
 // indent builds the tree-style prefix for a given depth.
 // depth=0: ""
 // depth=1: "  │ "
@@ -75,6 +158,7 @@ func logSend(depth int, content string) {
 	fmt.Fprintf(os.Stderr, "%s%s◆ agent.send%s %s\"%s\"%s\n",
 		prefix, colorCyan, colorReset,
 		colorDim, truncate(content, 80), colorReset)
+	bufferPlain("%s◆ agent.send \"%s\"", prefix, truncate(content, 80))
 }
 
 // logAdapterCall logs an adapter request.
@@ -85,6 +169,7 @@ func logAdapterCall(depth int, msgCount int, model string) {
 	fmt.Fprintf(os.Stderr, "%s  %s├─ adapter%s %s(%d msgs, model: %s)%s\n",
 		prefix, colorDim, colorReset,
 		colorDim, msgCount, model, colorReset)
+	bufferPlain("%s  ├─ adapter (%d msgs, model: %s)", prefix, msgCount, model)
 }
 
 // logToolCall logs when the model invokes a tool.
@@ -96,6 +181,7 @@ func logToolCall(depth int, toolName string, args string) {
 		prefix, colorDim, colorReset,
 		colorYellow, toolName, colorReset,
 		colorDim, truncate(args, 120), colorReset)
+	bufferPlain("%s  ├─ tool:%s %s", prefix, toolName, truncate(args, 120))
 }
 
 // logToolResult logs the result returned by a tool.
@@ -106,6 +192,7 @@ func logToolResult(depth int, toolName string, result string) {
 	fmt.Fprintf(os.Stderr, "%s  %s├─%s %stool:%s ← %s%s\n",
 		prefix, colorDim, colorReset,
 		colorGreen, toolName, truncate(result, 120), colorReset)
+	bufferPlain("%s  ├─ tool:%s <- %s", prefix, toolName, truncate(result, 120))
 }
 
 // logToolError logs an error from a tool execution.
@@ -116,6 +203,7 @@ func logToolError(depth int, toolName string, errMsg string) {
 	fmt.Fprintf(os.Stderr, "%s  %s├─%s %stool:%s ✗ %s%s\n",
 		prefix, colorDim, colorReset,
 		colorRed, toolName, truncate(errMsg, 120), colorReset)
+	bufferPlain("%s  ├─ tool:%s ERROR %s", prefix, toolName, truncate(errMsg, 120))
 }
 
 // logReply logs the assistant's final text response.
@@ -126,4 +214,5 @@ func logReply(depth int, content string) {
 	fmt.Fprintf(os.Stderr, "%s  %s└─%s %sreply:%s %s\n",
 		prefix, colorDim, colorReset,
 		colorWhite, colorReset, truncate(content, 120))
+	bufferPlain("%s  └─ reply: %s", prefix, truncate(content, 120))
 }

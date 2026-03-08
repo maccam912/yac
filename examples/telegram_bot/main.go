@@ -401,6 +401,10 @@ Essential memories:
 func main() {
 	_ = godotenv.Load()
 
+	// Route standard log output through yac's log buffer so the agent
+	// can introspect application logs (reminders, errors, etc.).
+	log.SetOutput(yac.LogWriter())
+
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN is required. Copy .env.example to .env and fill it in.")

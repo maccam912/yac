@@ -49,6 +49,7 @@ func All() []*yac.Tool {
 		WebRequest(),
 		SearXNG(),
 		Shell(),
+		ViewLogs(),
 	}
 	all = append(all, VikunjaTools()...)
 	return all
