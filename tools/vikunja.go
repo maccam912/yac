@@ -63,11 +63,11 @@ func vikunjaShouldInclude() bool {
 }
 
 // ListVikunjaTasks returns a tool that lists Vikunja tasks showing only
-// ID, title, done status, priority, and due date — keeping output compact.
+// ID, title, project, done status, priority, and due date — keeping output compact.
 func ListVikunjaTasks() *yac.Tool {
 	return &yac.Tool{
 		Name:        "list_vikunja_tasks",
-		Description: "List tasks from Vikunja. By default only shows incomplete tasks. Set include_completed=true to also see completed tasks. Returns a compact summary (ID, title, done, priority, due date) for each task. Use get_vikunja_task with an ID to see full details.",
+		Description: "List tasks from Vikunja. By default only shows incomplete tasks. Set include_completed=true to also see completed tasks. Returns a compact summary (ID, title, project, done, priority, due date) for each task. Use get_vikunja_task with an ID to see full details.",
 		Parameters: yac.Schema{
 			"type": "object",
 			"properties": map[string]any{
@@ -120,6 +120,10 @@ func ListVikunjaTasks() *yac.Tool {
 			var tasks []struct {
 				ID       int    `json:"id"`
 				Title    string `json:"title"`
+				Project  struct {
+					Title string `json:"title"`
+				} `json:"project"`
+				ProjectID int    `json:"project_id"`
 				Done     bool   `json:"done"`
 				Priority int    `json:"priority"`
 				DueDate  string `json:"due_date"`
@@ -140,6 +144,12 @@ func ListVikunjaTasks() *yac.Tool {
 					status = "[x]"
 				}
 				line := fmt.Sprintf("%s #%d: %s", status, t.ID, t.Title)
+				switch {
+				case t.Project.Title != "":
+					line += fmt.Sprintf(" (project: %s)", t.Project.Title)
+				case t.ProjectID > 0:
+					line += fmt.Sprintf(" (project: #%d)", t.ProjectID)
+				}
 				if t.Priority > 0 {
 					line += fmt.Sprintf(" (priority: %d)", t.Priority)
 				}

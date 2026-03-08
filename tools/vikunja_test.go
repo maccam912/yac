@@ -26,9 +26,9 @@ func setupVikunjaServer() *httptest.Server {
 		case r.URL.Path == "/api/v1/tasks/all" && r.Method == "GET":
 			filter := r.URL.Query().Get("filter")
 			allTasks := []map[string]any{
-				{"id": 1, "title": "Buy groceries", "done": false, "priority": 2, "due_date": "2026-03-15T00:00:00Z"},
-				{"id": 2, "title": "Write tests", "done": true, "priority": 0, "due_date": "0001-01-01T00:00:00Z"},
-				{"id": 3, "title": "Deploy app", "done": false, "priority": 5, "due_date": "2026-04-01T00:00:00Z"},
+				{"id": 1, "title": "Buy groceries", "project": map[string]any{"title": "Home"}, "done": false, "priority": 2, "due_date": "2026-03-15T00:00:00Z"},
+				{"id": 2, "title": "Write tests", "project_id": 7, "done": true, "priority": 0, "due_date": "0001-01-01T00:00:00Z"},
+				{"id": 3, "title": "Deploy app", "project": map[string]any{"title": "Work"}, "done": false, "priority": 5, "due_date": "2026-04-01T00:00:00Z"},
 			}
 			if strings.Contains(filter, "done = false") {
 				var filtered []map[string]any
@@ -146,6 +146,9 @@ func TestListVikunjaTasks(t *testing.T) {
 		if strings.Contains(result, "Write tests") {
 			t.Error("expected completed task 'Write tests' to be excluded by default")
 		}
+		if !strings.Contains(result, "(project: Home)") {
+			t.Error("expected result to show project name")
+		}
 		if !strings.Contains(result, "(priority: 2)") {
 			t.Error("expected result to show priority")
 		}
@@ -165,6 +168,9 @@ func TestListVikunjaTasks(t *testing.T) {
 		}
 		if !strings.Contains(result, "Write tests") {
 			t.Error("expected completed task 'Write tests' to be included with include_completed=true")
+		}
+		if !strings.Contains(result, "(project: #7)") {
+			t.Error("expected result to show project id fallback")
 		}
 		if !strings.Contains(result, "[x]") {
 			t.Error("expected result to show done marker")
