@@ -10,8 +10,9 @@ import (
 //   - Calculator: math expression evaluator
 //   - WebRequest: HTTP client for fetching web resources
 //   - SearXNG: web search (only if SEARXNG_URL env var is set)
+//   - Vikunja: task management (only if VIKUNJA_API_KEY and VIKUNJA_URL env vars are set)
 //
-// Tools with conditional inclusion (like SearXNG) are included in the
+// Tools with conditional inclusion (like SearXNG, Vikunja) are included in the
 // slice but will be filtered out by yac.FilterTools() if their conditions
 // aren't met.
 //
@@ -25,12 +26,14 @@ import (
 //	    Tools: yac.FilterTools(allTools),
 //	}
 func All() []*yac.Tool {
-	return []*yac.Tool{
+	all := []*yac.Tool{
 		Calculator(),
 		WebRequest(),
 		SearXNG(),
 		Shell(),
 	}
+	all = append(all, VikunjaTools()...)
+	return all
 }
 
 // AllWithDelegate returns all standard tools plus a Delegate tool

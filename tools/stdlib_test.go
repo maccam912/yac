@@ -9,8 +9,8 @@ import (
 func TestAll(t *testing.T) {
 	tools := All()
 
-	if len(tools) != 4 {
-		t.Errorf("expected 4 tools, got %d", len(tools))
+	if len(tools) != 9 {
+		t.Errorf("expected 9 tools, got %d", len(tools))
 	}
 
 	// Check that all expected tools are present
@@ -19,7 +19,8 @@ func TestAll(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	expected := []string{"calculator", "web_request", "searxng_search", "shell"}
+	expected := []string{"calculator", "web_request", "searxng_search", "shell",
+		"list_vikunja_tasks", "get_vikunja_task", "create_vikunja_task", "update_vikunja_task", "delete_vikunja_task"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("expected tool %q to be present", name)
@@ -36,8 +37,8 @@ func TestAllWithDelegate(t *testing.T) {
 
 	tools := AllWithDelegate(adapter, 2)
 
-	if len(tools) != 5 {
-		t.Errorf("expected 5 tools (4 base + delegate), got %d", len(tools))
+	if len(tools) != 10 {
+		t.Errorf("expected 10 tools (9 base + delegate), got %d", len(tools))
 	}
 
 	// Check that delegate is present

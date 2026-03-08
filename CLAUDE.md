@@ -33,6 +33,8 @@ YAC_API_KEY=not-needed
 YAC_BASE_URL=http://127.0.0.1:8081/v1
 YAC_MODEL=default
 SEARXNG_URL=https://searxng.example.com  # Optional - enables SearXNG search tool
+VIKUNJA_URL=https://vikunja.example.com  # Optional - enables Vikunja task tools
+VIKUNJA_API_KEY=tk_xxxx                  # Optional - Vikunja API token
 ```
 
 ## Architecture
@@ -54,6 +56,7 @@ Single Go module (`github.com/maccam912/yac`). External dependencies: `godotenv`
 - `Delegate(DelegateConfig)` — spawns concurrent subagents via goroutines. Subagents get their own `Agent` with isolated conversation. Supports recursive nesting up to `MaxDepth`.
 - `WebRequest()` — HTTP client tool (like curl) supporting GET, POST, PUT, DELETE, PATCH with custom headers and body
 - `SearXNG()` — web search via SearXNG instance. Requires `SEARXNG_URL` env var; only included if set (via `ShouldInclude`)
+- `VikunjaTools()` — task management via Vikunja API (list/get/create/update/delete). Requires `VIKUNJA_URL` and `VIKUNJA_API_KEY` env vars; only included if both are set. Lists show compact summaries (ID + title); full details require explicit get.
 
 **Observability:**
 - `tracing.go` — `InitTracing(ctx, serviceName)` sets up OTLP exporter for OpenTelemetry. Spans are created automatically in `Agent.Send()`, `OpenAIAdapter.SendMessage()`, tool executions, and delegate subagents.
