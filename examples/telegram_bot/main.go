@@ -292,10 +292,11 @@ type chatAgents struct {
 }
 
 type agentConfig struct {
-	adapter   *yac.OpenAIAdapter
-	tools     []*yac.Tool
-	memoryDir string
-	telegram  *telegramSender
+	adapter           *yac.OpenAIAdapter
+	tools             []*yac.Tool
+	memoryDir         string
+	telegram          *telegramSender
+	reminderProjectID int
 }
 
 func newChatAgents(cfg agentConfig) *chatAgents {
@@ -340,7 +341,15 @@ Operating guidance:
 - If the user should actually receive a Telegram notification, call send_telegram_message.
 - When the user asks to reset, start over, or clear the conversation while preserving important context, use reset_conversation.
 - When the user asks multiple independent questions, use delegate to answer them in parallel when that helps.
-
+{{if .ReminderProjectID}}
+Reminders (Vikunja-backed):
+- To set a reminder, use create_vikunja_task with project_id={{.ReminderProjectID}}.
+- ALWAYS include "chat_id:{{.ChatID}}" on its own line in the description so the reminder reaches the right chat.
+- Set due_date to when the reminder should fire (ISO 8601 format).
+- For recurring reminders, set repeat_after to the interval in seconds (e.g. 3600 = hourly, 86400 = daily).
+- One-off reminders: just set due_date, no repeat_after needed.
+- Use list_vikunja_tasks / delete_vikunja_task to view or cancel reminders.
+{{end}}
 Current date and time:
 - Day of week: {{.DayOfWeek}}
 - Date/time: {{.DateTime}}
@@ -361,12 +370,17 @@ Essential memories:
 			for _, title := range essentials {
 				essentialStr += "- " + title + "\n"
 			}
-			return map[string]string{
+			data := map[string]string{
 				"DateTime":          now.Format("2006-01-02 15:04:05"),
 				"DayOfWeek":         now.Weekday().String(),
 				"EssentialMemories": essentialStr,
 				"ToolList":          formatToolList(chatTools),
+				"ChatID":            strconv.FormatInt(chatID, 10),
 			}
+			if ca.cfg.reminderProjectID > 0 {
+				data["ReminderProjectID"] = strconv.Itoa(ca.cfg.reminderProjectID)
+			}
+			return data
 		}),
 		Tools:          chatTools,
 		ContextLength:  8192,
@@ -382,34 +396,6 @@ Essential memories:
 	session := &chatSession{agent: agent}
 	ca.agents[chatID] = session
 	return session
-}
-
-func scheduleReminder(chats *chatAgents, chatID int64, delay time.Duration, reminderText string) time.Time {
-	fireAt := time.Now().Add(delay)
-
-	time.AfterFunc(delay, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
-		session := chats.getOrCreate(chatID)
-		prompt := fmt.Sprintf(
-			"[SYSTEM EVENT] A scheduled reminder is due now.\nCurrent time: %s\nOriginal reminder time: %s\nReminder text: %s\nIf you notify the user, call send_telegram_message with chat_id=%d so it goes to the correct Telegram conversation. Your plain-text reply will not be shown automatically.",
-			time.Now().Format(time.RFC3339),
-			fireAt.Format(time.RFC3339),
-			reminderText,
-			chatID,
-		)
-
-		reply, err := session.send(ctx, prompt)
-		if err != nil {
-			log.Printf("[chat %d] Reminder event failed: %v", chatID, err)
-			return
-		}
-
-		log.Printf("[chat %d] Reminder event processed: %s", chatID, reply.Content)
-	})
-
-	return fireAt
 }
 
 func main() {
@@ -443,16 +429,60 @@ func main() {
 		memoryDir = filepath.Join(home, ".yac", "memories")
 	}
 
+	// Parse optional reminder project ID.
+	var reminderProjectID int
+	if pidStr := os.Getenv("REMINDER_PROJECT_ID"); pidStr != "" {
+		var err error
+		reminderProjectID, err = strconv.Atoi(pidStr)
+		if err != nil {
+			log.Fatalf("Invalid REMINDER_PROJECT_ID: %v", err)
+		}
+	}
+
 	chats := newChatAgents(agentConfig{
-		adapter:   adapter,
-		tools:     agentTools,
-		memoryDir: memoryDir,
-		telegram:  telegram,
+		adapter:           adapter,
+		tools:             agentTools,
+		memoryDir:         memoryDir,
+		telegram:          telegram,
+		reminderProjectID: reminderProjectID,
 	})
 
 	// Graceful shutdown on Ctrl+C.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	// Start reminder poller if REMINDER_PROJECT_ID is set.
+	if reminderProjectID > 0 {
+		poller := tools.NewReminderPoller(tools.ReminderConfig{
+			ProjectID:    reminderProjectID,
+			FiredFile:    filepath.Join(memoryDir, "fired.json"),
+			PollInterval: 60 * time.Second,
+			OnReminder: func(rctx context.Context, task tools.ReminderTask) {
+				chatID := task.ChatID
+				if chatID == 0 {
+					chatID = telegram.defaultChat()
+				}
+				if chatID == 0 {
+					log.Printf("[reminders] No chat_id for task #%d and no default chat", task.ID)
+					return
+				}
+				session := chats.getOrCreate(chatID)
+				prompt := fmt.Sprintf(
+					"[SYSTEM EVENT] Reminder due now.\nTitle: %s\nDescription: %s\n"+
+						"If you should notify the user, call send_telegram_message with chat_id=%d.",
+					task.Title, task.Description, chatID,
+				)
+				reply, err := session.send(rctx, prompt)
+				if err != nil {
+					log.Printf("[reminders] Failed to process reminder for task #%d: %v", task.ID, err)
+					return
+				}
+				log.Printf("[reminders] Processed reminder for task #%d: %s", task.ID, reply.Content)
+			},
+		})
+		go poller.Start(ctx)
+		log.Printf("Reminder poller started for project %d", reminderProjectID)
+	}
 
 	log.Printf("Bot started. Model: %s @ %s", adapter.Model, adapter.BaseURL)
 	log.Println("Send a message to your bot on Telegram. Press Ctrl+C to stop.")
@@ -487,7 +517,7 @@ func main() {
 
 			// Handle /start and /reset commands.
 			if text == "/start" {
-				_ = sendMessage(ctx, telegram, chatID, "Hello! I'm a yac-powered assistant. Ask me anything, try /remind 10m take a break, or use /reset for a fresh start.")
+				_ = sendMessage(ctx, telegram, chatID, "Hello! I'm a yac-powered assistant. Ask me anything or use /reset for a fresh start.")
 				continue
 			}
 			if text == "/reset" {
@@ -495,23 +525,6 @@ func main() {
 				delete(chats.agents, chatID)
 				chats.mu.Unlock()
 				_ = sendMessage(ctx, telegram, chatID, "Conversation reset. Fresh start!")
-				continue
-			}
-			if text == "/remind" || strings.HasPrefix(text, "/remind ") {
-				parts := strings.SplitN(text, " ", 3)
-				if len(parts) < 3 {
-					_ = sendMessage(ctx, telegram, chatID, "Usage: /remind <duration> <message>\nExample: /remind 30m stretch and drink water")
-					continue
-				}
-
-				delay, err := time.ParseDuration(parts[1])
-				if err != nil || delay <= 0 {
-					_ = sendMessage(ctx, telegram, chatID, "Invalid duration. Use Go-style durations like 10m, 2h, or 90s.")
-					continue
-				}
-
-				fireAt := scheduleReminder(chats, chatID, delay, parts[2])
-				_ = sendMessage(ctx, telegram, chatID, fmt.Sprintf("Reminder scheduled for %s.", fireAt.Format(time.RFC1123)))
 				continue
 			}
 

@@ -123,10 +123,11 @@ func ListVikunjaTasks() *yac.Tool {
 				Project struct {
 					Title string `json:"title"`
 				} `json:"project"`
-				ProjectID int    `json:"project_id"`
-				Done      bool   `json:"done"`
-				Priority  int    `json:"priority"`
-				DueDate   string `json:"due_date"`
+				ProjectID   int    `json:"project_id"`
+				Done        bool   `json:"done"`
+				Priority    int    `json:"priority"`
+				DueDate     string `json:"due_date"`
+				RepeatAfter int    `json:"repeat_after"`
 			}
 			if err := json.Unmarshal(data, &tasks); err != nil {
 				return "", fmt.Errorf("failed to parse tasks: %w", err)
@@ -155,6 +156,9 @@ func ListVikunjaTasks() *yac.Tool {
 				}
 				if t.DueDate != "" && !strings.HasPrefix(t.DueDate, "0001") {
 					line += fmt.Sprintf(" (due: %s)", t.DueDate[:10])
+				}
+				if t.RepeatAfter > 0 {
+					line += fmt.Sprintf(" (repeats every %ds)", t.RepeatAfter)
 				}
 				sb.WriteString(line + "\n")
 			}
@@ -212,6 +216,7 @@ func GetVikunjaTask() *yac.Tool {
 				Priority    int    `json:"priority"`
 				PercentDone int    `json:"percent_done"`
 				ProjectID   int    `json:"project_id"`
+				RepeatAfter int    `json:"repeat_after"`
 				HexColor    string `json:"hex_color"`
 				Identifier  string `json:"identifier"`
 				IsFavorite  bool   `json:"is_favorite"`
@@ -250,6 +255,9 @@ func GetVikunjaTask() *yac.Tool {
 				}
 			}
 			formatDate("Due", task.DueDate)
+			if task.RepeatAfter > 0 {
+				fmt.Fprintf(&sb, "Repeat After: %d seconds\n", task.RepeatAfter)
+			}
 			formatDate("Start", task.StartDate)
 			formatDate("End", task.EndDate)
 			formatDate("Done at", task.DoneAt)
@@ -311,6 +319,10 @@ func CreateVikunjaTask() *yac.Tool {
 					"type":        "string",
 					"description": "Due date in ISO 8601 format, e.g. '2026-03-15T00:00:00Z'.",
 				},
+				"repeat_after": map[string]any{
+					"type":        "number",
+					"description": "Repeat interval in seconds. When the task is marked done, Vikunja automatically creates a new due date by adding this interval. Use for recurring reminders (e.g. 3600 = every hour, 86400 = daily).",
+				},
 			},
 			"required": []string{"title", "project_id"},
 		},
@@ -321,6 +333,7 @@ func CreateVikunjaTask() *yac.Tool {
 				ProjectID   int    `json:"project_id"`
 				Priority    int    `json:"priority"`
 				DueDate     string `json:"due_date"`
+				RepeatAfter int    `json:"repeat_after"`
 			}
 			if err := json.Unmarshal(args, &params); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
@@ -343,6 +356,9 @@ func CreateVikunjaTask() *yac.Tool {
 			}
 			if params.DueDate != "" {
 				body["due_date"] = params.DueDate
+			}
+			if params.RepeatAfter > 0 {
+				body["repeat_after"] = params.RepeatAfter
 			}
 
 			data, err := vikunjaRequest(ctx, "PUT", fmt.Sprintf("/projects/%d/tasks", params.ProjectID), body)
@@ -396,6 +412,10 @@ func UpdateVikunjaTask() *yac.Tool {
 				"due_date": map[string]any{
 					"type":        "string",
 					"description": "New due date in ISO 8601 format.",
+				},
+				"repeat_after": map[string]any{
+					"type":        "number",
+					"description": "Repeat interval in seconds. 0 to disable repeating.",
 				},
 			},
 			"required": []string{"id"},
@@ -452,6 +472,13 @@ func UpdateVikunjaTask() *yac.Tool {
 				if err := json.Unmarshal(v, &s); err == nil && s != "" {
 					body["due_date"] = s
 					changed = append(changed, "due_date")
+				}
+			}
+			if v, ok := raw["repeat_after"]; ok {
+				var n int
+				if err := json.Unmarshal(v, &n); err == nil {
+					body["repeat_after"] = n
+					changed = append(changed, "repeat_after")
 				}
 			}
 
