@@ -47,6 +47,9 @@ tasks:
       - cmd: echo "=== Smoke{{":"}} bash_tool ==="
       - cmd: YAC_ENABLE_SHELL=1 go run ./examples/shell_tool/
       - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} memory ==="
+      - go run ./examples/memory/
+      - cmd: echo ""
       - cmd: echo "=== All smoke tests passed ==="
 
   test-all:

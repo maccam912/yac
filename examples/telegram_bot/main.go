@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,8 +132,9 @@ type chatAgents struct {
 }
 
 type agentConfig struct {
-	adapter *yac.OpenAIAdapter
-	tools   []*yac.Tool
+	adapter   *yac.OpenAIAdapter
+	tools     []*yac.Tool
+	memoryDir string
 }
 
 func newChatAgents(cfg agentConfig) *chatAgents {
@@ -150,22 +152,35 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 		return agent
 	}
 
+	// Each chat gets its own memory directory for persistent storage.
+	chatMemDir := filepath.Join(ca.cfg.memoryDir, fmt.Sprintf("chat_%d", chatID))
+	memoryCfg := tools.MemoryConfig{Dir: chatMemDir}
+	chatTools := append(ca.cfg.tools, tools.MemoryTools(memoryCfg)...)
+
 	systemTemplate := template.Must(template.New("system").Parse("You are a helpful Telegram bot assistant. You can perform calculations, " +
-		"fetch web pages, search the web, run shell commands, and delegate independent tasks to run in parallel. " +
+		"fetch web pages, search the web, run shell commands, delegate independent tasks to run in parallel, " +
+		"and remember things using your memory tools. " +
 		"Keep your responses concise and well-formatted for a chat interface. " +
 		"When a user asks multiple independent questions, use the delegate tool " +
-		"to answer them in parallel. Today is {{.DayOfWeek}}, {{.DateTime}}"))
+		"to answer them in parallel. Today is {{.DayOfWeek}}, {{.DateTime}}" +
+		"{{if .EssentialMemories}}\n\nEssential memories:\n{{.EssentialMemories}}{{end}}"))
 
 	agent := &yac.Agent{
 		Adapter: ca.cfg.adapter,
 		SystemPrompt: yac.TemplatePrompt(systemTemplate, func() any {
 			now := time.Now()
+			essentials := tools.EssentialMemories(chatMemDir)
+			var essentialStr string
+			for _, title := range essentials {
+				essentialStr += "- " + title + "\n"
+			}
 			return map[string]string{
-				"DateTime":  now.Format("2006-01-02 15:04:05"),
-				"DayOfWeek": now.Weekday().String(),
+				"DateTime":          now.Format("2006-01-02 15:04:05"),
+				"DayOfWeek":         now.Weekday().String(),
+				"EssentialMemories": essentialStr,
 			}
 		}),
-		Tools:          ca.cfg.tools,
+		Tools:          chatTools,
 		ContextLength:  8192,
 		AggressiveTrim: true,
 	}
@@ -189,12 +204,24 @@ func main() {
 
 	// Build tools: all standard tools + delegate.
 	// FilterTools will exclude SearXNG if SEARXNG_URL isn't set.
+	// Memory tools are added per-chat in getOrCreate.
 	allTools := tools.AllWithDelegate(adapter, 2)
 	agentTools := yac.FilterTools(allTools)
 
+	// Memory directory: use YAC_MEMORY_DIR or default to ~/.yac/memories
+	memoryDir := os.Getenv("YAC_MEMORY_DIR")
+	if memoryDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("Failed to get home dir: %v", err)
+		}
+		memoryDir = filepath.Join(home, ".yac", "memories")
+	}
+
 	chats := newChatAgents(agentConfig{
-		adapter: adapter,
-		tools:   agentTools,
+		adapter:   adapter,
+		tools:     agentTools,
+		memoryDir: memoryDir,
 	})
 
 	// Graceful shutdown on Ctrl+C.

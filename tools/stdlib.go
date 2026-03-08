@@ -15,8 +15,8 @@ import (
 // slice but will be filtered out by yac.FilterTools() if their conditions
 // aren't met.
 //
-// Note: Delegate is NOT included since it requires configuration (adapter,
-// tools for subagents, etc.). Use Delegate() separately if needed.
+// Note: Delegate and Memory tools are NOT included since they require
+// configuration. Use Delegate() and MemoryTools() separately if needed.
 //
 // Example:
 //
