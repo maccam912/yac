@@ -92,42 +92,202 @@ func getUpdates(ctx context.Context, token string, offset int) ([]tgUpdate, erro
 	return tgResp.Result, nil
 }
 
-func sendMessage(token string, chatID int64, text string) error {
-	// Telegram messages max out at 4096 chars. Split if needed.
-	for len(text) > 0 {
-		chunk := text
-		if len(chunk) > 4096 {
-			// Try to split at a newline boundary.
-			cut := strings.LastIndex(chunk[:4096], "\n")
-			if cut < 1 {
-				cut = 4096
-			}
-			chunk = text[:cut]
-			text = text[cut:]
-		} else {
-			text = ""
-		}
+type telegramSender struct {
+	mu            sync.Mutex
+	token         string
+	defaultChatID int64
+}
 
-		resp, err := http.PostForm(
-			fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token),
-			url.Values{
-				"chat_id": {strconv.FormatInt(chatID, 10)},
-				"text":    {chunk},
-			},
+func newTelegramSender(token string) *telegramSender {
+	return &telegramSender{token: token}
+}
+
+func (ts *telegramSender) rememberChat(chatID int64) {
+	if chatID == 0 {
+		return
+	}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.defaultChatID == 0 {
+		ts.defaultChatID = chatID
+		log.Printf("Default Telegram chat set to %d", chatID)
+	}
+}
+
+func (ts *telegramSender) defaultChat() int64 {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.defaultChatID
+}
+
+func (ts *telegramSender) send(ctx context.Context, chatID int64, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("telegram message text is required")
+	}
+	if chatID == 0 {
+		chatID = ts.defaultChat()
+	}
+	if chatID == 0 {
+		return fmt.Errorf("chat_id is required until the bot has heard from its first chat")
+	}
+
+	for _, chunk := range splitTelegramMessage(text, 4096) {
+		form := url.Values{
+			"chat_id": {strconv.FormatInt(chatID, 10)},
+			"text":    {chunk},
+		}
+		req, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", ts.token),
+			strings.NewReader(form.Encode()),
 		)
 		if err != nil {
 			return err
 		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		var apiResp struct {
+			OK          bool   `json:"ok"`
+			Description string `json:"description"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&apiResp)
 		resp.Body.Close()
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if apiResp.Description != "" {
+				return fmt.Errorf("telegram API returned %s: %s", resp.Status, apiResp.Description)
+			}
+			return fmt.Errorf("telegram API returned %s", resp.Status)
+		}
+		if !apiResp.OK {
+			if apiResp.Description != "" {
+				return fmt.Errorf("telegram API error: %s", apiResp.Description)
+			}
+			return fmt.Errorf("telegram API error")
+		}
 	}
+
 	return nil
+}
+
+func splitTelegramMessage(text string, maxRunes int) []string {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return nil
+	}
+
+	var chunks []string
+	for len(runes) > 0 {
+		if len(runes) <= maxRunes {
+			chunks = append(chunks, string(runes))
+			break
+		}
+
+		cut := maxRunes
+		for i := maxRunes - 1; i > 0; i-- {
+			if runes[i] == '\n' {
+				cut = i
+				break
+			}
+		}
+
+		chunks = append(chunks, string(runes[:cut]))
+		if cut < len(runes) && runes[cut] == '\n' {
+			runes = runes[cut+1:]
+		} else {
+			runes = runes[cut:]
+		}
+	}
+
+	return chunks
+}
+
+func telegramSendTool(sender *telegramSender) *yac.Tool {
+	return &yac.Tool{
+		Name:        "send_telegram_message",
+		Description: "Send a message to a Telegram chat using this bot. Use this for proactive alerts, reminders, and notifications. If chat_id is omitted, the first chat the bot ever heard from is used as the default destination.",
+		Parameters: yac.Schema{
+			"type": "object",
+			"properties": map[string]any{
+				"chat_id": map[string]any{
+					"type":        "integer",
+					"description": "Telegram chat ID to send the message to. Optional if the default chat is acceptable.",
+				},
+				"text": map[string]any{
+					"type":        "string",
+					"description": "Message text to send.",
+				},
+			},
+			"required": []string{"text"},
+		},
+		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var params struct {
+				ChatID int64  `json:"chat_id"`
+				Text   string `json:"text"`
+			}
+			if err := json.Unmarshal(args, &params); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if err := sender.send(ctx, params.ChatID, params.Text); err != nil {
+				return "", err
+			}
+			usedChatID := params.ChatID
+			if usedChatID == 0 {
+				usedChatID = sender.defaultChat()
+			}
+			return fmt.Sprintf("Sent Telegram message to chat %d.", usedChatID), nil
+		},
+	}
+}
+
+func formatToolList(tools []*yac.Tool) string {
+	var b strings.Builder
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		desc := strings.TrimSpace(tool.GetDescription())
+		if desc == "" {
+			desc = "No description provided."
+		}
+		b.WriteString("- ")
+		b.WriteString(tool.Name)
+		b.WriteString(": ")
+		b.WriteString(desc)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func sendMessage(ctx context.Context, sender *telegramSender, chatID int64, text string) error {
+	return sender.send(ctx, chatID, text)
 }
 
 // --- Per-chat agent management ---
 
+type chatSession struct {
+	mu    sync.Mutex
+	agent *yac.Agent
+}
+
+func (cs *chatSession) send(ctx context.Context, content string, opts ...yac.SendOption) (yac.Message, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.agent.Send(ctx, content, opts...)
+}
+
 type chatAgents struct {
 	mu     sync.Mutex
-	agents map[int64]*yac.Agent
+	agents map[int64]*chatSession
 	cfg    agentConfig
 }
 
@@ -135,38 +295,62 @@ type agentConfig struct {
 	adapter   *yac.OpenAIAdapter
 	tools     []*yac.Tool
 	memoryDir string
+	telegram  *telegramSender
 }
 
 func newChatAgents(cfg agentConfig) *chatAgents {
 	return &chatAgents{
-		agents: make(map[int64]*yac.Agent),
+		agents: make(map[int64]*chatSession),
 		cfg:    cfg,
 	}
 }
 
-func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
+func (ca *chatAgents) getOrCreate(chatID int64) *chatSession {
 	ca.mu.Lock()
 	defer ca.mu.Unlock()
 
-	if agent, ok := ca.agents[chatID]; ok {
-		return agent
+	if session, ok := ca.agents[chatID]; ok {
+		return session
 	}
 
 	// Each chat gets its own memory directory for persistent storage.
 	chatMemDir := filepath.Join(ca.cfg.memoryDir, fmt.Sprintf("chat_%d", chatID))
 	memoryCfg := tools.MemoryConfig{Dir: chatMemDir}
-	chatTools := make([]*yac.Tool, 0, len(ca.cfg.tools)+len(tools.MemoryTools(memoryCfg))+1)
+	chatTools := make([]*yac.Tool, 0, len(ca.cfg.tools)+len(tools.MemoryTools(memoryCfg))+2)
 	chatTools = append(chatTools, ca.cfg.tools...)
 	chatTools = append(chatTools, tools.MemoryTools(memoryCfg)...)
+	chatTools = append(chatTools, telegramSendTool(ca.cfg.telegram))
 
-	systemTemplate := template.Must(template.New("system").Parse("You are a helpful Telegram bot assistant. You can perform calculations, " +
-		"fetch web pages, search the web, run shell commands, delegate independent tasks to run in parallel, " +
-		"and remember things using your memory tools. " +
-		"When the user asks to reset, start over, or clear the conversation while preserving important context, use the reset_conversation tool. " +
-		"Keep your responses concise and well-formatted for a chat interface. " +
-		"When a user asks multiple independent questions, use the delegate tool " +
-		"to answer them in parallel. Today is {{.DayOfWeek}}, {{.DateTime}}" +
-		"{{if .EssentialMemories}}\n\nEssential memories:\n{{.EssentialMemories}}{{end}}"))
+	systemTemplate := template.Must(template.New("system").Parse(`Emulation profile:
+- Type: Fair Witness Bot
+- Framework: Function-Epistemic Hybrid Framework
+- Epistemic functions: observer, evaluator, analyst, synthesist, communicator
+- Natural-language constraint: use E-Prime
+- Output type: natural language
+- Detail level: moderate to high
+- Length: moderate to high
+- Complexity: low to high, as needed
+- Style: dry
+
+Operating guidance:
+- State observations, reasoning, uncertainty, and conclusions in plain language without theatrical tone.
+- Prefer precise claims over persuasive framing.
+- Keep responses suitable for a Telegram chat interface.
+- When handling a system event, scheduled reminder, or other background wake-up, your plain assistant reply remains internal only.
+- If the user should actually receive a Telegram notification, call send_telegram_message.
+- When the user asks to reset, start over, or clear the conversation while preserving important context, use reset_conversation.
+- When the user asks multiple independent questions, use delegate to answer them in parallel when that helps.
+
+Current date and time:
+- Day of week: {{.DayOfWeek}}
+- Date/time: {{.DateTime}}
+
+Available tools:
+{{.ToolList}}
+{{if .EssentialMemories}}
+
+Essential memories:
+{{.EssentialMemories}}{{end}}`))
 
 	agent := &yac.Agent{
 		Adapter: ca.cfg.adapter,
@@ -181,6 +365,7 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 				"DateTime":          now.Format("2006-01-02 15:04:05"),
 				"DayOfWeek":         now.Weekday().String(),
 				"EssentialMemories": essentialStr,
+				"ToolList":          formatToolList(chatTools),
 			}
 		}),
 		Tools:          chatTools,
@@ -194,8 +379,37 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 		),
 	}
 	agent.Tools = append(chatTools, tools.AgentTools(agent, chatMemDir)...)
-	ca.agents[chatID] = agent
-	return agent
+	session := &chatSession{agent: agent}
+	ca.agents[chatID] = session
+	return session
+}
+
+func scheduleReminder(chats *chatAgents, chatID int64, delay time.Duration, reminderText string) time.Time {
+	fireAt := time.Now().Add(delay)
+
+	time.AfterFunc(delay, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		session := chats.getOrCreate(chatID)
+		prompt := fmt.Sprintf(
+			"[SYSTEM EVENT] A scheduled reminder is due now.\nCurrent time: %s\nOriginal reminder time: %s\nReminder text: %s\nIf you notify the user, call send_telegram_message with chat_id=%d so it goes to the correct Telegram conversation. Your plain-text reply will not be shown automatically.",
+			time.Now().Format(time.RFC3339),
+			fireAt.Format(time.RFC3339),
+			reminderText,
+			chatID,
+		)
+
+		reply, err := session.send(ctx, prompt)
+		if err != nil {
+			log.Printf("[chat %d] Reminder event failed: %v", chatID, err)
+			return
+		}
+
+		log.Printf("[chat %d] Reminder event processed: %s", chatID, reply.Content)
+	})
+
+	return fireAt
 }
 
 func main() {
@@ -211,6 +425,7 @@ func main() {
 		BaseURL: os.Getenv("YAC_BASE_URL"),
 		Model:   os.Getenv("YAC_MODEL"),
 	}
+	telegram := newTelegramSender(token)
 
 	// Build tools: all standard tools + delegate.
 	// FilterTools will exclude SearXNG if SEARXNG_URL isn't set.
@@ -232,6 +447,7 @@ func main() {
 		adapter:   adapter,
 		tools:     agentTools,
 		memoryDir: memoryDir,
+		telegram:  telegram,
 	})
 
 	// Graceful shutdown on Ctrl+C.
@@ -266,44 +482,49 @@ func main() {
 
 			chatID := update.Message.Chat.ID
 			text := update.Message.Text
+			telegram.rememberChat(chatID)
 			log.Printf("[chat %d] User: %s", chatID, text)
 
 			// Handle /start and /reset commands.
 			if text == "/start" {
-				_ = sendMessage(token, chatID, "Hello! I'm a yac-powered assistant. Ask me anything, or try some math!")
+				_ = sendMessage(ctx, telegram, chatID, "Hello! I'm a yac-powered assistant. Ask me anything, try /remind 10m take a break, or use /reset for a fresh start.")
 				continue
 			}
 			if text == "/reset" {
 				chats.mu.Lock()
 				delete(chats.agents, chatID)
 				chats.mu.Unlock()
-				_ = sendMessage(token, chatID, "Conversation reset. Fresh start!")
+				_ = sendMessage(ctx, telegram, chatID, "Conversation reset. Fresh start!")
+				continue
+			}
+			if text == "/remind" || strings.HasPrefix(text, "/remind ") {
+				parts := strings.SplitN(text, " ", 3)
+				if len(parts) < 3 {
+					_ = sendMessage(ctx, telegram, chatID, "Usage: /remind <duration> <message>\nExample: /remind 30m stretch and drink water")
+					continue
+				}
+
+				delay, err := time.ParseDuration(parts[1])
+				if err != nil || delay <= 0 {
+					_ = sendMessage(ctx, telegram, chatID, "Invalid duration. Use Go-style durations like 10m, 2h, or 90s.")
+					continue
+				}
+
+				fireAt := scheduleReminder(chats, chatID, delay, parts[2])
+				_ = sendMessage(ctx, telegram, chatID, fmt.Sprintf("Reminder scheduled for %s.", fireAt.Format(time.RFC1123)))
 				continue
 			}
 
-			agent := chats.getOrCreate(chatID)
-
-			// Debug: log conversation state before sending
-			log.Printf("[chat %d] Agent has %d messages in history before Send", chatID, len(agent.Messages))
-			for i, msg := range agent.Messages {
-				preview := msg.Content
-				if len(preview) > 50 {
-					preview = preview[:50] + "..."
-				}
-				log.Printf("[chat %d]   Msg %d: [%s] %s", chatID, i, msg.Role, preview)
-			}
-
-			reply, err := agent.Send(ctx, text)
+			session := chats.getOrCreate(chatID)
+			reply, err := session.send(ctx, text)
 			if err != nil {
 				log.Printf("[chat %d] Error: %v", chatID, err)
-				_ = sendMessage(token, chatID, "Sorry, something went wrong. Try again.")
+				_ = sendMessage(ctx, telegram, chatID, "Sorry, something went wrong. Try again.")
 				continue
 			}
 
-			// Debug: log conversation state after sending
-			log.Printf("[chat %d] Agent has %d messages in history after Send", chatID, len(agent.Messages))
 			log.Printf("[chat %d] Bot: %s", chatID, reply.Content)
-			if err := sendMessage(token, chatID, reply.Content); err != nil {
+			if err := sendMessage(ctx, telegram, chatID, reply.Content); err != nil {
 				log.Printf("[chat %d] Failed to send reply: %v", chatID, err)
 			}
 		}

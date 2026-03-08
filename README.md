@@ -195,6 +195,7 @@ Runnable examples live in [`examples/`](examples/):
 | [`cached_prompt`](examples/cached_prompt) | Same template, but rendered once and cached |
 | [`tool_use`](examples/tool_use) | Custom tool definition + automatic tool-call loop |
 | [`calculator`](examples/calculator) | Using a stdlib tool with one line |
+| [`telegram_bot`](examples/telegram_bot) | Telegram bot with per-chat agents, memory, and scheduled wake-ups that can trigger proactive alerts |
 
 Run any example:
 
