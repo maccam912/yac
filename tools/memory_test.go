@@ -367,6 +367,144 @@ func TestRecallMemoryMissingID(t *testing.T) {
 	}
 }
 
+// --- EditMemory tests ---
+
+func TestEditMemoryTitle(t *testing.T) {
+	dir := tempMemoryDir(t)
+	seedMemories(t, dir)
+	tool := EditMemory(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{
+		"id":    "aaa111",
+		"title": "Updated Ollama Guide",
+	})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "updated") {
+		t.Errorf("unexpected result: %s", result)
+	}
+	if !strings.Contains(result, "title") {
+		t.Errorf("expected 'title' in changed fields: %s", result)
+	}
+
+	// Verify the file was updated and other fields preserved.
+	data, _ := os.ReadFile(filepath.Join(dir, "aaa111.md"))
+	content := string(data)
+	if !strings.Contains(content, "title: Updated Ollama Guide") {
+		t.Error("title not updated")
+	}
+	if !strings.Contains(content, "tags: [ollama, gpu, configuration]") {
+		t.Error("tags should be preserved")
+	}
+	if !strings.Contains(content, "essential: true") {
+		t.Error("essential flag should be preserved")
+	}
+	if !strings.Contains(content, "multi-GPU") {
+		t.Error("body content should be preserved")
+	}
+}
+
+func TestEditMemoryContent(t *testing.T) {
+	dir := tempMemoryDir(t)
+	seedMemories(t, dir)
+	tool := EditMemory(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{
+		"id":      "bbb222",
+		"content": "Updated: Use errors.Is and errors.As for inspection.",
+	})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "content") {
+		t.Errorf("expected 'content' in changed fields: %s", result)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dir, "bbb222.md"))
+	content := string(data)
+	if !strings.Contains(content, "errors.Is") {
+		t.Error("body not updated")
+	}
+	if !strings.Contains(content, "title: Go error handling patterns") {
+		t.Error("title should be preserved")
+	}
+}
+
+func TestEditMemoryMultipleFields(t *testing.T) {
+	dir := tempMemoryDir(t)
+	seedMemories(t, dir)
+	tool := EditMemory(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{
+		"id":        "ccc333",
+		"title":     "GPU VRAM optimization",
+		"tags":      []string{"gpu", "vram", "ml"},
+		"essential": true,
+	})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "title") || !strings.Contains(result, "tags") || !strings.Contains(result, "essential") {
+		t.Errorf("expected all changed fields listed: %s", result)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dir, "ccc333.md"))
+	content := string(data)
+	if !strings.Contains(content, "title: GPU VRAM optimization") {
+		t.Error("title not updated")
+	}
+	if !strings.Contains(content, "tags: [gpu, vram, ml]") {
+		t.Error("tags not updated")
+	}
+	if !strings.Contains(content, "essential: true") {
+		t.Error("essential not updated")
+	}
+}
+
+func TestEditMemoryNotFound(t *testing.T) {
+	dir := tempMemoryDir(t)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	tool := EditMemory(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{"id": "nonexistent", "title": "x"})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Error("expected error for nonexistent memory")
+	}
+}
+
+func TestEditMemoryNoChanges(t *testing.T) {
+	dir := tempMemoryDir(t)
+	seedMemories(t, dir)
+	tool := EditMemory(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{"id": "aaa111"})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "No changes") {
+		t.Errorf("expected no changes message, got: %s", result)
+	}
+}
+
+func TestEditMemoryMissingID(t *testing.T) {
+	dir := tempMemoryDir(t)
+	tool := EditMemory(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{"title": "x"})
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil {
+		t.Error("expected error for missing id")
+	}
+}
+
 // --- RemoveMemory tests ---
 
 func TestRemoveMemory(t *testing.T) {
@@ -417,11 +555,11 @@ func TestRemoveMemoryMissingID(t *testing.T) {
 
 // --- MemoryTools tests ---
 
-func TestMemoryToolsReturnsAllFour(t *testing.T) {
+func TestMemoryToolsReturnsAll(t *testing.T) {
 	dir := tempMemoryDir(t)
 	tools := MemoryTools(MemoryConfig{Dir: dir})
-	if len(tools) != 4 {
-		t.Fatalf("expected 4 tools, got %d", len(tools))
+	if len(tools) != 5 {
+		t.Fatalf("expected 5 tools, got %d", len(tools))
 	}
 
 	names := make(map[string]bool)
@@ -429,7 +567,7 @@ func TestMemoryToolsReturnsAllFour(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	expected := []string{"create_memory", "search_memories", "recall_memory", "remove_memory"}
+	expected := []string{"create_memory", "search_memories", "recall_memory", "edit_memory", "remove_memory"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing tool: %s", name)

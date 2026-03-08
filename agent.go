@@ -64,6 +64,14 @@ type Agent struct {
 
 	// Messages is the conversation history for this agent.
 	Messages []Message
+
+	// PostChatAction, if set, is called after each successful Send().
+	// It returns a follow-up prompt that is sent to the model as a
+	// second turn. The original reply is returned to the caller; the
+	// follow-up exchange is only added to the conversation history.
+	// This is useful for background tasks like memory management that
+	// should happen after every user interaction.
+	PostChatAction func() string
 }
 
 // Send sends a user message and returns the assistant's final response.
@@ -145,6 +153,18 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		if len(reply.ToolCalls) == 0 {
 			pending = append(pending, reply)
 			a.Messages = pending
+
+			// Run post-chat action if configured. Temporarily nil
+			// out PostChatAction to prevent recursive triggering.
+			if a.PostChatAction != nil {
+				action := a.PostChatAction
+				a.PostChatAction = nil
+				if prompt := action(); prompt != "" {
+					_, _ = a.Send(ctx, prompt)
+				}
+				a.PostChatAction = action
+			}
+
 			return reply, nil
 		}
 

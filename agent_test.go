@@ -212,6 +212,96 @@ func TestSendNilAdapter(t *testing.T) {
 	}
 }
 
+func TestSendPostChatAction(t *testing.T) {
+	mock := &mockAdapter{
+		responses: []Message{
+			{Role: "assistant", Content: "Here's your answer!"},       // reply to user
+			{Role: "assistant", Content: "No memories to save."}, // reply to post-action
+		},
+	}
+
+	actionCalled := false
+	agent := Agent{
+		Adapter: mock,
+		PostChatAction: func() string {
+			actionCalled = true
+			return "Save any memories."
+		},
+	}
+
+	reply, err := agent.Send(context.Background(), "Hi")
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if reply.Content != "Here's your answer!" {
+		t.Errorf("got %q, want original reply", reply.Content)
+	}
+	if !actionCalled {
+		t.Error("PostChatAction was not called")
+	}
+
+	// History should include both exchanges: user+reply + post-action+reply.
+	if len(agent.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(agent.Messages))
+	}
+	if agent.Messages[2].Role != "user" || agent.Messages[2].Content != "Save any memories." {
+		t.Errorf("expected post-action user message, got: %+v", agent.Messages[2])
+	}
+}
+
+func TestSendPostChatActionEmpty(t *testing.T) {
+	mock := &mockAdapter{
+		responses: []Message{
+			{Role: "assistant", Content: "Reply"},
+		},
+	}
+
+	agent := Agent{
+		Adapter: mock,
+		PostChatAction: func() string {
+			return "" // empty = skip
+		},
+	}
+
+	_, err := agent.Send(context.Background(), "Hi")
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	// Only the original exchange should be in history.
+	if len(agent.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(agent.Messages))
+	}
+}
+
+func TestSendPostChatActionDoesNotRecurse(t *testing.T) {
+	callCount := 0
+	mock := &mockAdapter{
+		responses: []Message{
+			{Role: "assistant", Content: "Reply to user"},
+			{Role: "assistant", Content: "Reply to post-action"},
+		},
+	}
+
+	agent := Agent{
+		Adapter: mock,
+		PostChatAction: func() string {
+			callCount++
+			return "Post action"
+		},
+	}
+
+	_, err := agent.Send(context.Background(), "Hi")
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	// PostChatAction should only be called once (not recursively).
+	if callCount != 1 {
+		t.Errorf("expected PostChatAction called once, got %d", callCount)
+	}
+}
+
 // failingAdapter always returns an error on SendMessage.
 type failingAdapter struct{}
 

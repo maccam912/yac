@@ -183,6 +183,12 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 		Tools:          chatTools,
 		ContextLength:  8192,
 		AggressiveTrim: true,
+		PostChatAction: yac.StaticPrompt(
+			"[SYSTEM] Review the conversation above. If the user shared any new facts, preferences, " +
+				"or information worth remembering, save or update memories now using your memory tools. " +
+				"If nothing noteworthy was said, do nothing. Do not respond to the user — this is an " +
+				"internal housekeeping step.",
+		),
 	}
 	ca.agents[chatID] = agent
 	return agent

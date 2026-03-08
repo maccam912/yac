@@ -421,6 +421,119 @@ func RecallMemory(cfg MemoryConfig) *yac.Tool {
 	}
 }
 
+// EditMemory returns a tool that updates a memory in place by ID.
+// Only the fields provided are changed; omitted fields keep their current values.
+func EditMemory(cfg MemoryConfig) *yac.Tool {
+	return &yac.Tool{
+		Name:        "edit_memory",
+		Description: "Update an existing memory in place by its ID. Only provide the fields you want to change — omitted fields are preserved. This is more efficient than removing and recreating a memory.",
+		Parameters: yac.Schema{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type":        "string",
+					"description": "The ID of the memory to edit.",
+				},
+				"title": map[string]any{
+					"type":        "string",
+					"description": "New title. Omit to keep the current title.",
+				},
+				"tags": map[string]any{
+					"type":        "array",
+					"description": "New tags (replaces all existing tags). Omit to keep current tags.",
+					"items": map[string]any{
+						"type": "string",
+					},
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "New content. Omit to keep the current content.",
+				},
+				"essential": map[string]any{
+					"type":        "boolean",
+					"description": "New essential flag. Omit to keep the current value.",
+				},
+			},
+			"required": []string{"id"},
+		},
+		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
+			// Use a raw map so we can distinguish between "field not provided"
+			// and "field provided as zero value".
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(args, &raw); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+
+			idRaw, ok := raw["id"]
+			if !ok {
+				return "", fmt.Errorf("id is required")
+			}
+			var id string
+			if err := json.Unmarshal(idRaw, &id); err != nil || id == "" {
+				return "", fmt.Errorf("id is required")
+			}
+
+			// Read existing memory.
+			filePath := filepath.Join(cfg.Dir, id+".md")
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return "", fmt.Errorf("memory not found: %s", id)
+				}
+				return "", fmt.Errorf("failed to read memory: %w", err)
+			}
+
+			meta, body, err := parseFrontmatter(string(data))
+			if err != nil {
+				return "", fmt.Errorf("failed to parse memory: %w", err)
+			}
+
+			// Apply updates for provided fields.
+			var changed []string
+			if v, ok := raw["title"]; ok {
+				var title string
+				if err := json.Unmarshal(v, &title); err == nil && title != "" {
+					meta.Title = title
+					changed = append(changed, "title")
+				}
+			}
+			if v, ok := raw["tags"]; ok {
+				var tags []string
+				if err := json.Unmarshal(v, &tags); err == nil {
+					meta.Tags = tags
+					changed = append(changed, "tags")
+				}
+			}
+			if v, ok := raw["content"]; ok {
+				var content string
+				if err := json.Unmarshal(v, &content); err == nil && content != "" {
+					body = content
+					changed = append(changed, "content")
+				}
+			}
+			if v, ok := raw["essential"]; ok {
+				var essential bool
+				if err := json.Unmarshal(v, &essential); err == nil {
+					meta.Essential = essential
+					changed = append(changed, "essential")
+				}
+			}
+
+			if len(changed) == 0 {
+				return "No changes provided.", nil
+			}
+
+			// Write back.
+			fileContent := renderMemoryFile(meta, body)
+			if err := os.WriteFile(filePath, []byte(fileContent), 0644); err != nil {
+				return "", fmt.Errorf("failed to write memory: %w", err)
+			}
+
+			return fmt.Sprintf("Memory %s updated (%s).", id, strings.Join(changed, ", ")), nil
+		},
+	}
+}
+
 // RemoveMemory returns a tool that deletes a memory by ID.
 func RemoveMemory(cfg MemoryConfig) *yac.Tool {
 	return &yac.Tool{
@@ -461,12 +574,13 @@ func RemoveMemory(cfg MemoryConfig) *yac.Tool {
 	}
 }
 
-// MemoryTools returns all four memory tools configured with the given config.
+// MemoryTools returns all memory tools configured with the given config.
 func MemoryTools(cfg MemoryConfig) []*yac.Tool {
 	return []*yac.Tool{
 		CreateMemory(cfg),
 		SearchMemories(cfg),
 		RecallMemory(cfg),
+		EditMemory(cfg),
 		RemoveMemory(cfg),
 	}
 }
