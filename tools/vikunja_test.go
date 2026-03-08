@@ -24,11 +24,22 @@ func setupVikunjaServer() *httptest.Server {
 
 		switch {
 		case r.URL.Path == "/api/v1/tasks/all" && r.Method == "GET":
-			json.NewEncoder(w).Encode([]map[string]any{
+			filter := r.URL.Query().Get("filter")
+			allTasks := []map[string]any{
 				{"id": 1, "title": "Buy groceries", "done": false, "priority": 2, "due_date": "2026-03-15T00:00:00Z"},
 				{"id": 2, "title": "Write tests", "done": true, "priority": 0, "due_date": "0001-01-01T00:00:00Z"},
 				{"id": 3, "title": "Deploy app", "done": false, "priority": 5, "due_date": "2026-04-01T00:00:00Z"},
-			})
+			}
+			if strings.Contains(filter, "done = false") {
+				var filtered []map[string]any
+				for _, t := range allTasks {
+					if !t["done"].(bool) {
+						filtered = append(filtered, t)
+					}
+				}
+				allTasks = filtered
+			}
+			json.NewEncoder(w).Encode(allTasks)
 
 		case strings.HasPrefix(r.URL.Path, "/api/v1/tasks/") && r.Method == "GET":
 			json.NewEncoder(w).Encode(map[string]any{
@@ -122,6 +133,7 @@ func TestListVikunjaTasks(t *testing.T) {
 	tool := ListVikunjaTasks()
 
 	withVikunjaEnv(t, server.URL, func() {
+		// Default: only incomplete tasks
 		args, _ := json.Marshal(map[string]any{})
 		result, err := tool.Execute(context.Background(), args)
 		if err != nil {
@@ -131,14 +143,31 @@ func TestListVikunjaTasks(t *testing.T) {
 		if !strings.Contains(result, "Buy groceries") {
 			t.Error("expected result to contain 'Buy groceries'")
 		}
-		if !strings.Contains(result, "[x]") {
-			t.Error("expected result to show done marker")
+		if strings.Contains(result, "Write tests") {
+			t.Error("expected completed task 'Write tests' to be excluded by default")
 		}
 		if !strings.Contains(result, "(priority: 2)") {
 			t.Error("expected result to show priority")
 		}
 		if !strings.Contains(result, "(due: 2026-03-15)") {
 			t.Error("expected result to show due date")
+		}
+
+		// With include_completed: show all tasks
+		args, _ = json.Marshal(map[string]any{"include_completed": true})
+		result, err = tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("unexpected error with include_completed: %v", err)
+		}
+
+		if !strings.Contains(result, "Buy groceries") {
+			t.Error("expected result to contain 'Buy groceries'")
+		}
+		if !strings.Contains(result, "Write tests") {
+			t.Error("expected completed task 'Write tests' to be included with include_completed=true")
+		}
+		if !strings.Contains(result, "[x]") {
+			t.Error("expected result to show done marker")
 		}
 	})
 }

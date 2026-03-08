@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -66,7 +67,7 @@ func vikunjaShouldInclude() bool {
 func ListVikunjaTasks() *yac.Tool {
 	return &yac.Tool{
 		Name:        "list_vikunja_tasks",
-		Description: "List tasks from Vikunja. Returns a compact summary (ID, title, done, priority, due date) for each task. Use get_vikunja_task with an ID to see full details.",
+		Description: "List tasks from Vikunja. By default only shows incomplete tasks. Set include_completed=true to also see completed tasks. Returns a compact summary (ID, title, done, priority, due date) for each task. Use get_vikunja_task with an ID to see full details.",
 		Parameters: yac.Schema{
 			"type": "object",
 			"properties": map[string]any{
@@ -76,14 +77,19 @@ func ListVikunjaTasks() *yac.Tool {
 				},
 				"filter": map[string]any{
 					"type":        "string",
-					"description": "Optional filter string using Vikunja filter syntax, e.g. 'done = false' to show only open tasks.",
+					"description": "Optional additional filter string using Vikunja filter syntax.",
+				},
+				"include_completed": map[string]any{
+					"type":        "boolean",
+					"description": "If true, include completed tasks in the results. Defaults to false (only incomplete tasks).",
 				},
 			},
 		},
 		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var params struct {
-				Page   int    `json:"page"`
-				Filter string `json:"filter"`
+				Page             int    `json:"page"`
+				Filter           string `json:"filter"`
+				IncludeCompleted bool   `json:"include_completed"`
 			}
 			if err := json.Unmarshal(args, &params); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
@@ -93,8 +99,17 @@ func ListVikunjaTasks() *yac.Tool {
 			}
 
 			path := fmt.Sprintf("/tasks/all?page=%d&per_page=50&sort_by[]=id&order_by[]=desc", params.Page)
-			if params.Filter != "" {
-				path += "&filter=" + params.Filter
+			var filter string
+			if !params.IncludeCompleted {
+				filter = "done = false"
+				if params.Filter != "" {
+					filter += " && " + params.Filter
+				}
+			} else {
+				filter = params.Filter
+			}
+			if filter != "" {
+				path += "&filter=" + url.QueryEscape(filter)
 			}
 
 			data, err := vikunjaRequest(ctx, "GET", path, nil)
