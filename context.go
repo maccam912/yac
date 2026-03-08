@@ -40,7 +40,7 @@ func EstimateTokens(messages []Message) int {
 func EstimateToolTokens(tools []*Tool) int {
 	total := 0
 	for _, t := range tools {
-		total += len(t.Name) + len(t.Description)
+		total += len(t.Name) + len(t.GetDescription())
 		if t.Parameters != nil {
 			b, _ := json.Marshal(t.Parameters)
 			total += len(b)

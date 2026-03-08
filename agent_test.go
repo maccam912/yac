@@ -215,7 +215,7 @@ func TestSendNilAdapter(t *testing.T) {
 func TestSendPostChatAction(t *testing.T) {
 	mock := &mockAdapter{
 		responses: []Message{
-			{Role: "assistant", Content: "Here's your answer!"},       // reply to user
+			{Role: "assistant", Content: "Here's your answer!"},  // reply to user
 			{Role: "assistant", Content: "No memories to save."}, // reply to post-action
 		},
 	}

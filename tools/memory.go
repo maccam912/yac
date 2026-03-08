@@ -421,6 +421,110 @@ func RecallMemory(cfg MemoryConfig) *yac.Tool {
 	}
 }
 
+// memoryPageSize is the number of memories per page in ListMemories.
+const memoryPageSize = 50
+
+// countMemories returns the number of .md files in the memory directory.
+func countMemories(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			n++
+		}
+	}
+	return n
+}
+
+// ListMemories returns a tool that lists all memories with pagination.
+// Memories are sorted in reverse chronological order (newest first).
+// The tool description is dynamic and includes the current total memory count.
+func ListMemories(cfg MemoryConfig) *yac.Tool {
+	return &yac.Tool{
+		Name: "list_memories",
+		DynamicDescription: func() string {
+			n := countMemories(cfg.Dir)
+			pages := (n + memoryPageSize - 1) / memoryPageSize
+			if pages < 1 {
+				pages = 1
+			}
+			return fmt.Sprintf(
+				"List all memories sorted by newest first (%d memories total, %d pages of up to %d). "+
+					"Returns ID, title, tags, and created date for each memory. "+
+					"Use the page parameter to paginate (default: page 1).",
+				n, pages, memoryPageSize,
+			)
+		},
+		Parameters: yac.Schema{
+			"type": "object",
+			"properties": map[string]any{
+				"page": map[string]any{
+					"type":        "number",
+					"description": "Page number (1-based). Defaults to 1.",
+				},
+			},
+		},
+		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var params struct {
+				Page int `json:"page"`
+			}
+			if err := json.Unmarshal(args, &params); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if params.Page < 1 {
+				params.Page = 1
+			}
+
+			metas, _, err := loadAllMemories(cfg.Dir)
+			if err != nil {
+				return "", fmt.Errorf("failed to load memories: %w", err)
+			}
+
+			if len(metas) == 0 {
+				return "No memories stored yet.", nil
+			}
+
+			// Sort by created time descending (newest first).
+			sort.Slice(metas, func(i, j int) bool {
+				return metas[i].Created > metas[j].Created
+			})
+
+			total := len(metas)
+			totalPages := (total + memoryPageSize - 1) / memoryPageSize
+			if params.Page > totalPages {
+				return fmt.Sprintf("Page %d is out of range (total pages: %d).", params.Page, totalPages), nil
+			}
+
+			start := (params.Page - 1) * memoryPageSize
+			end := start + memoryPageSize
+			if end > total {
+				end = total
+			}
+			page := metas[start:end]
+
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "Memories (page %d of %d, %d total):\n\n", params.Page, totalPages, total)
+			for i, m := range page {
+				num := start + i + 1
+				fmt.Fprintf(&sb, "%d. [%s] %s\n", num, m.ID, m.Title)
+				if len(m.Tags) > 0 {
+					fmt.Fprintf(&sb, "   Tags: %s\n", strings.Join(m.Tags, ", "))
+				}
+				fmt.Fprintf(&sb, "   Created: %s\n", m.Created)
+			}
+
+			if params.Page < totalPages {
+				fmt.Fprintf(&sb, "\nUse page=%d to see more.", params.Page+1)
+			}
+
+			return sb.String(), nil
+		},
+	}
+}
+
 // EditMemory returns a tool that updates a memory in place by ID.
 // Only the fields provided are changed; omitted fields keep their current values.
 func EditMemory(cfg MemoryConfig) *yac.Tool {
@@ -578,6 +682,7 @@ func RemoveMemory(cfg MemoryConfig) *yac.Tool {
 func MemoryTools(cfg MemoryConfig) []*yac.Tool {
 	return []*yac.Tool{
 		CreateMemory(cfg),
+		ListMemories(cfg),
 		SearchMemories(cfg),
 		RecallMemory(cfg),
 		EditMemory(cfg),

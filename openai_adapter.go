@@ -94,7 +94,7 @@ func (a *OpenAIAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Mess
 			Type: "function",
 			Function: apiToolFunction{
 				Name:        t.Name,
-				Description: t.Description,
+				Description: t.GetDescription(),
 				Parameters:  t.Parameters,
 			},
 		})

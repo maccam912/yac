@@ -367,6 +367,128 @@ func TestRecallMemoryMissingID(t *testing.T) {
 	}
 }
 
+// --- ListMemories tests ---
+
+func TestListMemories(t *testing.T) {
+	dir := tempMemoryDir(t)
+	seedMemories(t, dir)
+	tool := ListMemories(MemoryConfig{Dir: dir})
+
+	if tool.Name != "list_memories" {
+		t.Errorf("expected name 'list_memories', got %q", tool.Name)
+	}
+
+	args, _ := json.Marshal(map[string]any{})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "page 1 of 1") {
+		t.Errorf("expected page info, got: %s", result)
+	}
+	if !strings.Contains(result, "5 total") {
+		t.Errorf("expected 5 total, got: %s", result)
+	}
+	// All 5 seeded memories should appear.
+	for _, id := range []string{"aaa111", "bbb222", "ccc333", "ddd444", "eee555"} {
+		if !strings.Contains(result, id) {
+			t.Errorf("expected %s in results", id)
+		}
+	}
+}
+
+func TestListMemoriesEmpty(t *testing.T) {
+	dir := tempMemoryDir(t)
+	tool := ListMemories(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "No memories") {
+		t.Errorf("expected empty message, got: %s", result)
+	}
+}
+
+func TestListMemoriesOutOfRange(t *testing.T) {
+	dir := tempMemoryDir(t)
+	seedMemories(t, dir)
+	tool := ListMemories(MemoryConfig{Dir: dir})
+
+	args, _ := json.Marshal(map[string]any{"page": 99})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "out of range") {
+		t.Errorf("expected out of range message, got: %s", result)
+	}
+}
+
+func TestListMemoriesDynamicDescription(t *testing.T) {
+	dir := tempMemoryDir(t)
+	tool := ListMemories(MemoryConfig{Dir: dir})
+
+	// Before any memories exist.
+	desc := tool.GetDescription()
+	if !strings.Contains(desc, "0 memories") {
+		t.Errorf("expected 0 memories in description, got: %s", desc)
+	}
+
+	// After seeding.
+	seedMemories(t, dir)
+	desc = tool.GetDescription()
+	if !strings.Contains(desc, "5 memories") {
+		t.Errorf("expected 5 memories in description, got: %s", desc)
+	}
+	if !strings.Contains(desc, "1 pages") {
+		t.Errorf("expected 1 pages in description, got: %s", desc)
+	}
+}
+
+func TestListMemoriesReverseChronological(t *testing.T) {
+	dir := tempMemoryDir(t)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create memories with different timestamps.
+	times := []string{
+		"2026-01-01T00:00:00Z",
+		"2026-06-15T12:00:00Z",
+		"2026-03-10T06:00:00Z",
+	}
+	ids := []string{"old_one", "newest", "middle"}
+	for i, id := range ids {
+		meta := memoryMeta{
+			ID:      id,
+			Title:   "Memory " + id,
+			Tags:    []string{"test"},
+			Created: times[i],
+		}
+		content := renderMemoryFile(meta, "body")
+		if err := os.WriteFile(filepath.Join(dir, id+".md"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := ListMemories(MemoryConfig{Dir: dir})
+	args, _ := json.Marshal(map[string]any{})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// "newest" should appear before "middle" which should appear before "old_one".
+	idxNewest := strings.Index(result, "newest")
+	idxMiddle := strings.Index(result, "middle")
+	idxOld := strings.Index(result, "old_one")
+	if idxNewest > idxMiddle || idxMiddle > idxOld {
+		t.Errorf("memories not in reverse chronological order:\n%s", result)
+	}
+}
+
 // --- EditMemory tests ---
 
 func TestEditMemoryTitle(t *testing.T) {
@@ -558,8 +680,8 @@ func TestRemoveMemoryMissingID(t *testing.T) {
 func TestMemoryToolsReturnsAll(t *testing.T) {
 	dir := tempMemoryDir(t)
 	tools := MemoryTools(MemoryConfig{Dir: dir})
-	if len(tools) != 5 {
-		t.Fatalf("expected 5 tools, got %d", len(tools))
+	if len(tools) != 6 {
+		t.Fatalf("expected 6 tools, got %d", len(tools))
 	}
 
 	names := make(map[string]bool)
@@ -567,7 +689,7 @@ func TestMemoryToolsReturnsAll(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	expected := []string{"create_memory", "search_memories", "recall_memory", "edit_memory", "remove_memory"}
+	expected := []string{"create_memory", "list_memories", "search_memories", "recall_memory", "edit_memory", "remove_memory"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing tool: %s", name)

@@ -66,6 +66,12 @@ type Tool struct {
 	// The context supports cancellation and timeouts.
 	Execute func(ctx context.Context, args json.RawMessage) (string, error)
 
+	// DynamicDescription, if set, is called each time the tool definition
+	// is sent to the model instead of using the static Description field.
+	// This lets tool descriptions include live data (e.g. counts, status).
+	// If nil, Description is used as-is.
+	DynamicDescription func() string
+
 	// ShouldInclude is an optional function that determines whether this
 	// tool should be included in an agent's tool set. Return true to include
 	// the tool, false to exclude it. Useful for tools that require specific
@@ -77,6 +83,16 @@ type Tool struct {
 	//	    return os.Getenv("SEARXNG_URL") != ""
 	//	}
 	ShouldInclude func() bool
+}
+
+// GetDescription returns the tool's description. If DynamicDescription is set,
+// it is called to produce a fresh description; otherwise the static Description
+// field is returned.
+func (t *Tool) GetDescription() string {
+	if t.DynamicDescription != nil {
+		return t.DynamicDescription()
+	}
+	return t.Description
 }
 
 // ToolChoice controls whether and how the model uses tools on a given turn.
