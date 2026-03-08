@@ -72,6 +72,7 @@ type vikunjaTaskRaw struct {
 }
 
 func (rp *ReminderPoller) poll(ctx context.Context) {
+	log.Printf("[reminders] Polling project %d for due tasks", rp.cfg.ProjectID)
 	path := fmt.Sprintf("/projects/%d/tasks?per_page=200", rp.cfg.ProjectID)
 	data, err := vikunjaRequest(ctx, "GET", path, nil)
 	if err != nil {
@@ -173,7 +174,7 @@ func shouldFire(now time.Time, dueDate string, firedDueDate string) bool {
 	return firedDueDate != dueDate
 }
 
-var chatIDRegexp = regexp.MustCompile(`(?m)^chat_id:(\d+)\s*$`)
+var chatIDRegexp = regexp.MustCompile(`(?m)^chat_id:(-?\d+)\s*$`)
 
 // extractChatID scans a task description for a line like "chat_id:12345".
 func extractChatID(description string) int64 {

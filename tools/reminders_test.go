@@ -48,6 +48,16 @@ func TestExtractChatID(t *testing.T) {
 			description: "chat_id:555",
 			want:        555,
 		},
+		{
+			name:        "negative chat_id (group chat)",
+			description: "Reminder\nchat_id:-1001234567890\nDetails",
+			want:        -1001234567890,
+		},
+		{
+			name:        "negative chat_id only line",
+			description: "chat_id:-42",
+			want:        -42,
+		},
 	}
 
 	for _, tt := range tests {
