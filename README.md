@@ -148,6 +148,7 @@ reply, _ := agent.Send(ctx, "What is sqrt(3^2 + 4^2)?")
 | Tool | Description |
 |------|-------------|
 | `tools.Calculator()` | Evaluates math expressions: arithmetic, exponents, functions (`sqrt`, `sin`, `log`, etc.), constants (`pi`, `e`) |
+| `tools.AgentTools(agent, memoryDir)` | Returns the standard tools that need a live agent instance, currently `reset_conversation` |
 
 ## Adapters
 

@@ -155,11 +155,14 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 	// Each chat gets its own memory directory for persistent storage.
 	chatMemDir := filepath.Join(ca.cfg.memoryDir, fmt.Sprintf("chat_%d", chatID))
 	memoryCfg := tools.MemoryConfig{Dir: chatMemDir}
-	chatTools := append(ca.cfg.tools, tools.MemoryTools(memoryCfg)...)
+	chatTools := make([]*yac.Tool, 0, len(ca.cfg.tools)+len(tools.MemoryTools(memoryCfg))+1)
+	chatTools = append(chatTools, ca.cfg.tools...)
+	chatTools = append(chatTools, tools.MemoryTools(memoryCfg)...)
 
 	systemTemplate := template.Must(template.New("system").Parse("You are a helpful Telegram bot assistant. You can perform calculations, " +
 		"fetch web pages, search the web, run shell commands, delegate independent tasks to run in parallel, " +
 		"and remember things using your memory tools. " +
+		"When the user asks to reset, start over, or clear the conversation while preserving important context, use the reset_conversation tool. " +
 		"Keep your responses concise and well-formatted for a chat interface. " +
 		"When a user asks multiple independent questions, use the delegate tool " +
 		"to answer them in parallel. Today is {{.DayOfWeek}}, {{.DateTime}}" +
@@ -190,6 +193,7 @@ func (ca *chatAgents) getOrCreate(chatID int64) *yac.Agent {
 				"internal housekeeping step.",
 		),
 	}
+	agent.Tools = append(chatTools, tools.AgentTools(agent, chatMemDir)...)
 	ca.agents[chatID] = agent
 	return agent
 }

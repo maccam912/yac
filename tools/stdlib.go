@@ -4,6 +4,23 @@ import (
 	"github.com/maccam912/yac"
 )
 
+// AgentTools returns the standard tools that need access to a live agent.
+//
+// These tools cannot be included in All() because they need per-agent
+// configuration when the agent is constructed.
+func AgentTools(agent *yac.Agent, memoryDir string) []*yac.Tool {
+	if agent == nil {
+		return nil
+	}
+
+	return []*yac.Tool{
+		ResetConversation(ResetConversationConfig{
+			Agent:     agent,
+			MemoryDir: memoryDir,
+		}),
+	}
+}
+
 // All returns all standard tools from the yac tools library.
 //
 // This includes:
@@ -16,8 +33,9 @@ import (
 // slice but will be filtered out by yac.FilterTools() if their conditions
 // aren't met.
 //
-// Note: Delegate and Memory tools are NOT included since they require
-// configuration. Use Delegate() and MemoryTools() separately if needed.
+// Note: Delegate, Memory, and agent-bound tools like reset_conversation are
+// NOT included since they require configuration. Use Delegate(),
+// MemoryTools(), and AgentTools() separately if needed.
 //
 // Example:
 //

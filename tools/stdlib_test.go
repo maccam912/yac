@@ -1,10 +1,43 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maccam912/yac"
 )
+
+func TestAgentTools(t *testing.T) {
+	agent := &yac.Agent{
+		Messages: []yac.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "hi"},
+			{Role: "user", Content: "start over"},
+		},
+	}
+
+	tools := AgentTools(agent, "")
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 agent tool, got %d", len(tools))
+	}
+	if tools[0].Name != "reset_conversation" {
+		t.Fatalf("expected reset_conversation, got %q", tools[0].Name)
+	}
+
+	args, _ := json.Marshal(map[string]any{})
+	result, err := tools[0].Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "Conversation reset") {
+		t.Fatalf("unexpected result: %s", result)
+	}
+	if len(agent.Messages) != 1 || agent.Messages[0].Content != "start over" {
+		t.Fatalf("expected only last user message to remain, got %#v", agent.Messages)
+	}
+}
 
 func TestAll(t *testing.T) {
 	tools := All()
