@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/maccam912/yac"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // DelegateConfig configures the subagent delegation tool.
@@ -79,7 +81,7 @@ func delegateTool(cfg DelegateConfig, depth int) *yac.Tool {
 			"properties": map[string]any{
 				"tasks": map[string]any{
 					"type":        "array",
-					"description": "List of tasks to delegate. Each task runs as an independent subagent in parallel.",
+					"description": "List of tasks to delegate. Each task runs as the independent subagent in parallel.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -120,6 +122,10 @@ func delegateTool(cfg DelegateConfig, depth int) *yac.Tool {
 			// Build the system prompt for subagents.
 			sysPrompt := buildSubagentPrompt(cfg.SystemPrompt, depth)
 
+			// Increment depth for subagent context.
+			parentDepth := yac.DepthFromContext(ctx)
+			subCtx := yac.ContextWithDepth(ctx, parentDepth+1)
+
 			type result struct {
 				index int
 				desc  string
@@ -135,13 +141,23 @@ func delegateTool(cfg DelegateConfig, depth int) *yac.Tool {
 				go func(i int, desc string) {
 					defer wg.Done()
 
+					// Create an OTel span for each subagent.
+					subagentCtx, span := yac.Tracer().Start(subCtx, "delegate.subagent",
+						trace.WithAttributes(
+							attribute.Int("yac.subagent.index", i),
+							attribute.String("yac.subagent.task", desc),
+							attribute.Int("yac.depth", parentDepth+1),
+						),
+					)
+					defer span.End()
+
 					agent := yac.Agent{
 						Adapter:      cfg.Adapter,
 						SystemPrompt: yac.StaticPrompt(sysPrompt),
 						Tools:        subTools,
 					}
 
-					reply, err := agent.Send(ctx, desc)
+					reply, err := agent.Send(subagentCtx, desc)
 					results[i] = result{
 						index: i,
 						desc:  desc,

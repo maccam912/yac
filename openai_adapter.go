@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OpenAIAdapter connects to OpenAI or any OpenAI-compatible API
@@ -70,24 +73,14 @@ type apiError struct {
 // SendMessage implements the Adapter interface. It posts the conversation
 // to the chat completions endpoint and returns the model's reply.
 func (a *OpenAIAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Message, error) {
-	// Debug logging (can be disabled by setting YAC_DEBUG_API=false)
-	if os.Getenv("YAC_DEBUG_API") != "false" {
-		fmt.Fprintf(os.Stderr, "[YAC_DEBUG] Sending %d messages to API (model: %s)\n", len(req.Messages), a.Model)
-		for i, msg := range req.Messages {
-			preview := msg.Content
-			if len(preview) > 60 {
-				preview = preview[:60] + "..."
-			}
-			toolCallInfo := ""
-			if len(msg.ToolCalls) > 0 {
-				toolCallInfo = fmt.Sprintf(" +%d tool_calls", len(msg.ToolCalls))
-			}
-			if msg.ToolCallID != "" {
-				toolCallInfo = fmt.Sprintf(" (tool_result for %s)", msg.ToolCallID)
-			}
-			fmt.Fprintf(os.Stderr, "[YAC_DEBUG]   %d. [%s] %s%s\n", i, msg.Role, preview, toolCallInfo)
-		}
-	}
+	ctx, span := tracer.Start(ctx, "adapter.send",
+		trace.WithAttributes(
+			attribute.String("yac.adapter.model", a.Model),
+			attribute.Int("yac.adapter.message_count", len(req.Messages)),
+			attribute.Int("yac.adapter.tool_count", len(req.Tools)),
+		),
+	)
+	defer span.End()
 
 	// Convert Tool definitions to API format.
 	var apiTools []apiToolDef
@@ -111,12 +104,16 @@ func (a *OpenAIAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Mess
 
 	payload, err := json.Marshal(apiReq)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Message{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	url := a.BaseURL + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Message{}, fmt.Errorf("create request: %w", err)
 	}
 
@@ -128,26 +125,43 @@ func (a *OpenAIAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Mess
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Message{}, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Message{}, fmt.Errorf("read response: %w", err)
 	}
 
+	span.SetAttributes(
+		attribute.Int("yac.adapter.http_status", resp.StatusCode),
+		attribute.Int("yac.adapter.response_bytes", len(body)),
+	)
+
 	if resp.StatusCode != http.StatusOK {
-		return Message{}, fmt.Errorf("API error (HTTP %d): %s", resp.StatusCode, string(body))
+		err := fmt.Errorf("API error (HTTP %d): %s", resp.StatusCode, string(body))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return Message{}, err
 	}
 
 	var chatResp chatResponse
 	if err := json.Unmarshal(body, &chatResp); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Message{}, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if chatResp.Error != nil {
-		return Message{}, fmt.Errorf("API error: [%s] %s", chatResp.Error.Type, chatResp.Error.Message)
+		err := fmt.Errorf("API error: [%s] %s", chatResp.Error.Type, chatResp.Error.Message)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return Message{}, err
 	}
 
 	if len(chatResp.Choices) == 0 {
@@ -159,10 +173,19 @@ func (a *OpenAIAdapter) SendMessage(ctx context.Context, req *ChatRequest) (Mess
 			content = chatResp.Reasoning
 		}
 		if content == "" {
-			return Message{}, fmt.Errorf("no choices in response")
+			err := fmt.Errorf("no choices in response")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return Message{}, err
 		}
 		return Message{Role: "assistant", Content: content}, nil
 	}
 
-	return chatResp.Choices[0].Message, nil
+	msg := chatResp.Choices[0].Message
+	span.SetAttributes(
+		attribute.Int("yac.adapter.tool_calls", len(msg.ToolCalls)),
+		attribute.String("yac.adapter.reply_preview", truncate(msg.Content, 100)),
+	)
+
+	return msg, nil
 }

@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // maxToolRounds limits tool-use round trips to prevent infinite loops.
@@ -90,6 +94,19 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		return Message{}, fmt.Errorf("agent has no adapter configured")
 	}
 
+	depth := DepthFromContext(ctx)
+
+	// Start an OTel span for this Send call.
+	ctx, span := tracer.Start(ctx, "agent.send",
+		trace.WithAttributes(
+			attribute.String("yac.user_message", truncate(content, 200)),
+			attribute.Int("yac.depth", depth),
+		),
+	)
+	defer span.End()
+
+	logSend(depth, content)
+
 	cfg := &sendConfig{}
 	for _, opt := range opts {
 		opt(cfg)
@@ -107,6 +124,8 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		tools = nil
 		toolChoice = "none"
 	}
+
+	span.SetAttributes(attribute.Int("yac.tool_count", len(tools)))
 
 	// Work on a local copy of messages so that a.Messages is only
 	// updated when the turn completes successfully.  This prevents
@@ -144,8 +163,12 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 			ToolChoice: toolChoice,
 		}
 
+		logAdapterCall(depth, len(reqMessages), adapterModel(a.Adapter))
+
 		reply, err := a.Adapter.SendMessage(ctx, req)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return Message{}, fmt.Errorf("adapter call failed: %w", err)
 		}
 
@@ -153,6 +176,9 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		if len(reply.ToolCalls) == 0 {
 			pending = append(pending, reply)
 			a.Messages = pending
+
+			logReply(depth, reply.Content)
+			span.SetAttributes(attribute.String("yac.reply", truncate(reply.Content, 200)))
 
 			// Run post-chat action if configured. Temporarily nil
 			// out PostChatAction to prevent recursive triggering.
@@ -174,14 +200,36 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		for _, tc := range reply.ToolCalls {
 			tool := findTool(tools, tc.Function.Name)
 			if tool == nil {
-				return Message{}, fmt.Errorf("model called unknown tool: %q", tc.Function.Name)
+				err := fmt.Errorf("model called unknown tool: %q", tc.Function.Name)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return Message{}, err
 			}
 
-			result, err := tool.Execute(ctx, json.RawMessage(tc.Function.Arguments))
+			logToolCall(depth, tc.Function.Name, tc.Function.Arguments)
+
+			// Create a child span for the tool execution.
+			toolCtx, toolSpan := tracer.Start(ctx, "tool.execute",
+				trace.WithAttributes(
+					attribute.String("yac.tool.name", tc.Function.Name),
+					attribute.String("yac.tool.args", truncate(tc.Function.Arguments, 500)),
+					attribute.Int("yac.depth", depth),
+				),
+			)
+
+			result, err := tool.Execute(toolCtx, json.RawMessage(tc.Function.Arguments))
 			if err != nil {
 				// Send the error to the model so it can recover.
 				result = fmt.Sprintf("Error: %v", err)
+				logToolError(depth, tc.Function.Name, err.Error())
+				toolSpan.RecordError(err)
+				toolSpan.SetStatus(codes.Error, err.Error())
+			} else {
+				logToolResult(depth, tc.Function.Name, result)
 			}
+
+			toolSpan.SetAttributes(attribute.String("yac.tool.result", truncate(result, 500)))
+			toolSpan.End()
 
 			pending = append(pending, Message{
 				Role:       "tool",
@@ -197,7 +245,19 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		}
 	}
 
-	return Message{}, fmt.Errorf("exceeded maximum tool rounds (%d)", maxToolRounds)
+	err := fmt.Errorf("exceeded maximum tool rounds (%d)", maxToolRounds)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+	return Message{}, err
+}
+
+// adapterModel extracts the model name from an adapter if it's an
+// OpenAIAdapter. Returns "unknown" for other adapter types.
+func adapterModel(a Adapter) string {
+	if oa, ok := a.(*OpenAIAdapter); ok {
+		return oa.Model
+	}
+	return "unknown"
 }
 
 // buildRequestMessages prepends the system prompt (if set) to the

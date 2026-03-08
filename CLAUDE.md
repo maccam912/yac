@@ -37,7 +37,7 @@ SEARXNG_URL=https://searxng.example.com  # Optional - enables SearXNG search too
 
 ## Architecture
 
-Single Go module (`github.com/maccam912/yac`), one external dependency (`godotenv`).
+Single Go module (`github.com/maccam912/yac`). External dependencies: `godotenv`, OpenTelemetry (`go.opentelemetry.io/otel`).
 
 **Core types (root package `yac`):**
 - `Agent` — the central struct. Holds an `Adapter`, `SystemPrompt`, `Tools`, `Messages` (conversation history), and context management settings (`ContextLength`, `AggressiveTrim`). The `Send(ctx, message, ...opts)` method runs the full tool-use loop (up to 10 rounds).
@@ -54,6 +54,11 @@ Single Go module (`github.com/maccam912/yac`), one external dependency (`godoten
 - `Delegate(DelegateConfig)` — spawns concurrent subagents via goroutines. Subagents get their own `Agent` with isolated conversation. Supports recursive nesting up to `MaxDepth`.
 - `WebRequest()` — HTTP client tool (like curl) supporting GET, POST, PUT, DELETE, PATCH with custom headers and body
 - `SearXNG()` — web search via SearXNG instance. Requires `SEARXNG_URL` env var; only included if set (via `ShouldInclude`)
+
+**Observability:**
+- `tracing.go` — `InitTracing(ctx, serviceName)` sets up OTLP exporter for OpenTelemetry. Spans are created automatically in `Agent.Send()`, `OpenAIAdapter.SendMessage()`, tool executions, and delegate subagents.
+- `logging.go` — Always-on pretty stderr logging with ANSI colors and tree-style indentation. Nesting depth is propagated via `context.Context` using `DepthFromContext()`/`ContextWithDepth()`. Delegate subagents automatically log at increased depth.
+- `ClearContext(agent)` — tool that resets conversation history, keeping only the last user message.
 
 **Key design pattern:** `Agent.Send()` works on a local copy of `Messages` and only commits to `a.Messages` on success, preventing history pollution from mid-turn failures.
 
