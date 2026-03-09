@@ -30,8 +30,7 @@ func AgentTools(agent *yac.Agent, memoryDir string) []*yac.Tool {
 //   - Vikunja: task management (only if VIKUNJA_API_KEY and VIKUNJA_URL env vars are set)
 //
 // Tools with conditional inclusion (like SearXNG, Vikunja) are included in the
-// slice but will be filtered out by yac.FilterTools() if their conditions
-// aren't met.
+// slice but will be filtered out by yac.FilterTools() if their conditions aren't met.
 //
 // Note: Delegate, Memory, and agent-bound tools like reset_conversation are
 // NOT included since they require configuration. Use Delegate(),
@@ -49,7 +48,6 @@ func All() []*yac.Tool {
 		WebRequest(),
 		SearXNG(),
 		Shell(),
-		ViewLogs(),
 	}
 	all = append(all, VikunjaTools()...)
 	return all
