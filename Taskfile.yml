@@ -53,6 +53,9 @@ tasks:
       - cmd: echo "=== Smoke{{":"}} reset_conversation ==="
       - go run ./examples/reset_conversation/
       - cmd: echo ""
+      - cmd: echo "=== Smoke{{":"}} reminders ==="
+      - go run ./examples/reminders/
+      - cmd: echo ""
       - cmd: echo "=== All smoke tests passed ==="
 
   test-all:

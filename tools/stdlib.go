@@ -32,9 +32,9 @@ func AgentTools(agent *yac.Agent, memoryDir string) []*yac.Tool {
 // Tools with conditional inclusion (like SearXNG, Vikunja) are included in the
 // slice but will be filtered out by yac.FilterTools() if their conditions aren't met.
 //
-// Note: Delegate, Memory, and agent-bound tools like reset_conversation are
-// NOT included since they require configuration. Use Delegate(),
-// MemoryTools(), and AgentTools() separately if needed.
+// Note: Delegate, Memory, SetReminder, and agent-bound tools like reset_conversation
+// are NOT included since they require configuration. Use Delegate(),
+// MemoryTools(), SetReminder(), and AgentTools() separately if needed.
 //
 // Example:
 //

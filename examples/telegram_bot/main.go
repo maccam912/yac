@@ -296,6 +296,7 @@ type agentConfig struct {
 	tools             []*yac.Tool
 	memoryDir         string
 	telegram          *telegramSender
+	reminderProjectID int
 }
 
 func newChatAgents(cfg agentConfig) *chatAgents {
@@ -316,10 +317,13 @@ func (ca *chatAgents) getOrCreate(chatID int64) *chatSession {
 	// Each chat gets its own memory directory for persistent storage.
 	chatMemDir := filepath.Join(ca.cfg.memoryDir, fmt.Sprintf("chat_%d", chatID))
 	memoryCfg := tools.MemoryConfig{Dir: chatMemDir}
-	chatTools := make([]*yac.Tool, 0, len(ca.cfg.tools)+len(tools.MemoryTools(memoryCfg))+2)
+	chatTools := make([]*yac.Tool, 0, len(ca.cfg.tools)+len(tools.MemoryTools(memoryCfg))+3)
 	chatTools = append(chatTools, ca.cfg.tools...)
 	chatTools = append(chatTools, tools.MemoryTools(memoryCfg)...)
 	chatTools = append(chatTools, telegramSendTool(ca.cfg.telegram))
+	if ca.cfg.reminderProjectID > 0 {
+		chatTools = append(chatTools, tools.SetReminder(ca.cfg.reminderProjectID))
+	}
 
 	systemTemplate := template.Must(template.New("system").Parse(`Emulation profile:
 - Type: Fair Witness Bot
@@ -336,8 +340,9 @@ Operating guidance:
 - State observations, reasoning, uncertainty, and conclusions in plain language without theatrical tone.
 - Prefer precise claims over persuasive framing.
 - Keep responses suitable for a Telegram chat interface.
-- When handling a system event, scheduled reminder, or other background wake-up, your plain assistant reply remains internal only.
+- When handling a system event or other background wake-up (e.g. a fired reminder), your plain assistant reply remains internal only.
 - If the user should actually receive a Telegram notification, call send_telegram_message.
+- Users can ask you to set reminders using the set_reminder tool. When a reminder fires, you will receive a system message — use send_telegram_message to notify the user.
 - When the user asks to reset, start over, or clear the conversation while preserving important context, use reset_conversation.
 
 Task planning and delegation:
@@ -412,9 +417,16 @@ func main() {
 	}
 	telegram := newTelegramSender(token)
 
+	var reminderProjectID int
+	if s := os.Getenv("VIKUNJA_REMINDER_PROJECT_ID"); s != "" {
+		if id, err := strconv.Atoi(s); err == nil {
+			reminderProjectID = id
+		}
+	}
+
 	// Build tools: all standard tools + delegate.
-	// FilterTools will exclude SearXNG if SEARXNG_URL isn't set.
-	// Memory tools are added per-chat in getOrCreate.
+	// FilterTools will exclude SearXNG/Vikunja if env vars aren't set.
+	// Memory and reminder tools are added per-chat in getOrCreate.
 	allTools := tools.AllWithDelegate(adapter, 2)
 	agentTools := yac.FilterTools(allTools)
 
@@ -429,15 +441,39 @@ func main() {
 	}
 
 	chats := newChatAgents(agentConfig{
-		adapter:   adapter,
-		tools:     agentTools,
-		memoryDir: memoryDir,
-		telegram:  telegram,
+		adapter:           adapter,
+		tools:             agentTools,
+		memoryDir:         memoryDir,
+		telegram:          telegram,
+		reminderProjectID: reminderProjectID,
 	})
 
 	// Graceful shutdown on Ctrl+C.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	// Start reminder poller if configured.
+	if reminderProjectID > 0 {
+		tools.StartReminderPoller(ctx, tools.ReminderConfig{
+			ProjectID: reminderProjectID,
+			OnReminder: func(ctx context.Context, task tools.ReminderTask) {
+				chatID := telegram.defaultChat()
+				if chatID == 0 {
+					log.Printf("[reminder] Task #%d '%s' fired but no chat available yet", task.ID, task.Title)
+					return
+				}
+				msg := fmt.Sprintf("[REMINDER] %s (was due %s)",
+					task.Title, task.DueDate.Format("2006-01-02 15:04"))
+				if task.Description != "" {
+					msg += "\n" + task.Description
+				}
+				if err := sendMessage(ctx, telegram, chatID, msg); err != nil {
+					log.Printf("[reminder] Failed to send reminder for task #%d: %v", task.ID, err)
+				}
+			},
+		})
+		log.Printf("Reminder poller started for Vikunja project %d", reminderProjectID)
+	}
 
 	log.Printf("Bot started. Model: %s @ %s", adapter.Model, adapter.BaseURL)
 	log.Println("Send a message to your bot on Telegram. Press Ctrl+C to stop.")
