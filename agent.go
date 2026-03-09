@@ -10,8 +10,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// maxToolRounds limits tool-use round trips to prevent infinite loops.
-const maxToolRounds = 10
+// defaultMaxToolRounds is the default limit for tool-use round trips.
+const defaultMaxToolRounds = 10
 
 // Adapter is the interface to a backend LLM.
 // Any backend (OpenAI, Anthropic, Ollama, etc.) implements this.
@@ -76,6 +76,10 @@ type Agent struct {
 	// This is useful for background tasks like memory management that
 	// should happen after every user interaction.
 	PostChatAction func() string
+
+	// MaxToolRounds limits tool-use round trips per Send() call to
+	// prevent infinite loops. Defaults to 10 if zero.
+	MaxToolRounds int
 }
 
 // Send sends a user message and returns the assistant's final response.
@@ -142,7 +146,11 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 	toolTokens := EstimateToolTokens(tools)
 
 	// Tool-use loop.
-	for round := 0; round < maxToolRounds; round++ {
+	maxRounds := a.MaxToolRounds
+	if maxRounds <= 0 {
+		maxRounds = defaultMaxToolRounds
+	}
+	for round := 0; round < maxRounds; round++ {
 		reqMessages := buildRequestMessages(a.SystemPrompt, pending)
 
 		// Aggressive mode: strip completed tool-call clusters to
@@ -245,7 +253,7 @@ func (a *Agent) Send(ctx context.Context, content string, opts ...SendOption) (M
 		}
 	}
 
-	err := fmt.Errorf("exceeded maximum tool rounds (%d)", maxToolRounds)
+	err := fmt.Errorf("exceeded maximum tool rounds (%d)", maxRounds)
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
 	return Message{}, err

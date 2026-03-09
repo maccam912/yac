@@ -384,15 +384,16 @@ Essential memories:
 				"DayOfWeek":            now.Weekday().String(),
 				"EssentialMemories":    essentialStr,
 				"ToolList":             formatToolList(chatTools),
-				"ChatID":              strconv.FormatInt(chatID, 10),
+				"ChatID":               strconv.FormatInt(chatID, 10),
 				"ReminderPollerActive": ca.cfg.reminderProjectID > 0,
-				"ReminderProjectID":   strconv.Itoa(ca.cfg.reminderProjectID),
+				"ReminderProjectID":    strconv.Itoa(ca.cfg.reminderProjectID),
 			}
 			return data
 		}),
 		Tools:          chatTools,
 		ContextLength:  8192,
 		AggressiveTrim: true,
+		MaxToolRounds:  35,
 		PostChatAction: yac.StaticPrompt(
 			"[SYSTEM] Review the conversation above. If the user shared any new facts, preferences, " +
 				"or information worth remembering, save or update memories now using your memory tools. " +
