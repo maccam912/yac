@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/maccam912/yac"
 )
+
+var reminderPollerRunning atomic.Bool
 
 // ReminderTask represents a Vikunja task that has fired as a reminder.
 type ReminderTask struct {
@@ -117,7 +120,9 @@ func shouldFire(done bool, dueDate string, now time.Time) bool {
 // calls cfg.OnReminder and then marks the task done via the API.
 // The goroutine stops when ctx is cancelled.
 func StartReminderPoller(ctx context.Context, cfg ReminderConfig) {
+	reminderPollerRunning.Store(true)
 	go func() {
+		defer reminderPollerRunning.Store(false)
 		pollReminders(ctx, cfg)
 
 		ticker := time.NewTicker(5 * time.Minute)
@@ -175,5 +180,24 @@ func pollReminders(ctx context.Context, cfg ReminderConfig) {
 		if err != nil {
 			log.Printf("reminder poller: failed to mark task #%d done: %v", t.ID, err)
 		}
+	}
+}
+
+// ReminderPollerStatus returns a tool that reports whether the reminder poller
+// goroutine is currently running.
+func ReminderPollerStatus() *yac.Tool {
+	return &yac.Tool{
+		Name:        "reminder_poller_status",
+		Description: "Check whether the background reminder poller is currently running.",
+		Parameters: yac.Schema{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+		Execute: func(ctx context.Context, args json.RawMessage) (string, error) {
+			if reminderPollerRunning.Load() {
+				return "Reminder poller is running.", nil
+			}
+			return "Reminder poller is NOT running.", nil
+		},
 	}
 }

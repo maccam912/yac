@@ -323,6 +323,7 @@ func (ca *chatAgents) getOrCreate(chatID int64) *chatSession {
 	chatTools = append(chatTools, telegramSendTool(ca.cfg.telegram))
 	if ca.cfg.reminderProjectID > 0 {
 		chatTools = append(chatTools, tools.SetReminder(ca.cfg.reminderProjectID))
+		chatTools = append(chatTools, tools.ReminderPollerStatus())
 	}
 
 	systemTemplate := template.Must(template.New("system").Parse(`Emulation profile:
@@ -344,7 +345,12 @@ Operating guidance:
 - If the user should actually receive a Telegram notification, call send_telegram_message.
 - Users can ask you to set reminders using the set_reminder tool. When a reminder fires, you will receive a system message — use send_telegram_message to notify the user.
 - When the user asks to reset, start over, or clear the conversation while preserving important context, use reset_conversation.
-
+{{if .ReminderPollerActive}}
+Reminder poller:
+- A background poller is actively monitoring Vikunja project {{.ReminderProjectID}} for overdue tasks every 5 minutes.
+- When a reminder fires, the user is notified automatically via Telegram and the task is marked done.
+- You can set new reminders with the set_reminder tool.
+{{end}}
 Task planning and delegation:
 - When a user request involves multiple steps, research, or any work where you care about the answer but not the journey, PLAN FIRST before acting.
 - Write out a short numbered plan of the steps needed to fulfill the request. Share this plan with the user so they can see your approach.
@@ -373,12 +379,14 @@ Essential memories:
 			for _, title := range essentials {
 				essentialStr += "- " + title + "\n"
 			}
-			data := map[string]string{
-				"DateTime":          now.Format("2006-01-02 15:04:05 UTC"),
-				"DayOfWeek":         now.Weekday().String(),
-				"EssentialMemories": essentialStr,
-				"ToolList":          formatToolList(chatTools),
-				"ChatID":            strconv.FormatInt(chatID, 10),
+			data := map[string]any{
+				"DateTime":             now.Format("2006-01-02 15:04:05 UTC"),
+				"DayOfWeek":            now.Weekday().String(),
+				"EssentialMemories":    essentialStr,
+				"ToolList":             formatToolList(chatTools),
+				"ChatID":              strconv.FormatInt(chatID, 10),
+				"ReminderPollerActive": ca.cfg.reminderProjectID > 0,
+				"ReminderProjectID":   strconv.Itoa(ca.cfg.reminderProjectID),
 			}
 			return data
 		}),
