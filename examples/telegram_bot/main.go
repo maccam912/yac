@@ -293,7 +293,7 @@ type chatAgents struct {
 
 type agentConfig struct {
 	adapter           *yac.OpenAIAdapter
-	tools             []*yac.Tool
+	baseTools         []*yac.Tool
 	memoryDir         string
 	telegram          *telegramSender
 	reminderProjectID int
@@ -317,8 +317,22 @@ func (ca *chatAgents) getOrCreate(chatID int64) *chatSession {
 	// Each chat gets its own memory directory for persistent storage.
 	chatMemDir := filepath.Join(ca.cfg.memoryDir, fmt.Sprintf("chat_%d", chatID))
 	memoryCfg := tools.MemoryConfig{Dir: chatMemDir}
-	chatTools := make([]*yac.Tool, 0, len(ca.cfg.tools)+len(tools.MemoryTools(memoryCfg))+3)
-	chatTools = append(chatTools, ca.cfg.tools...)
+
+	// 1. Give subagents access to base tools + search_memories
+	subTools := make([]*yac.Tool, len(ca.cfg.baseTools))
+	copy(subTools, ca.cfg.baseTools)
+	subTools = append(subTools, tools.SearchMemories(memoryCfg))
+
+	// 2. The delegate tool itself
+	delegateTool := tools.Delegate(tools.DelegateConfig{
+		Adapter:  ca.cfg.adapter,
+		Tools:    subTools,
+		MaxDepth: 1, // Only need 1 level for this pattern
+	})
+
+	// 3. Assemble top-level agent tools
+	chatTools := make([]*yac.Tool, 0, 5)
+	chatTools = append(chatTools, delegateTool)
 	chatTools = append(chatTools, tools.MemoryTools(memoryCfg)...)
 	chatTools = append(chatTools, telegramSendTool(ca.cfg.telegram))
 	if ca.cfg.reminderProjectID > 0 {
@@ -351,14 +365,13 @@ Reminder poller:
 - When a reminder fires, the user is notified automatically via Telegram and the task is marked done.
 - You can set new reminders with the set_reminder tool.
 {{end}}
-Task planning and delegation:
-- When a user request involves multiple steps, research, or any work where you care about the answer but not the journey, PLAN FIRST before acting.
-- Write out a short numbered plan of the steps needed to fulfill the request. Share this plan with the user so they can see your approach.
-- Then use delegate to farm out individual steps to subagents. Each subagent handles one step. You orchestrate and synthesize their results.
-- For simple, single-step questions you can answer directly — no plan needed.
-- For multi-step tasks (e.g. "research X and compare with Y", "find the best Z", "summarize these three things"), always decompose into a plan and delegate the steps.
-- Subagents run concurrently, so delegation of independent steps is fast. Prefer parallel delegation when steps don't depend on each other.
-- After all subagents report back, synthesize their findings into a coherent response for the user.
+Task orchestration:
+- You are an orchestrator. You have NO tools for factual lookup, math, or web search.
+- You DO have access to memory tools, reminder tools, and a telegram message sender.
+- Any time the user asks for information, calculation, or external search, you MUST use the 'delegate' tool to spawn subagents.
+- Subagents run concurrently and have access to all standard tools PLUS the search_memories tool, but ZERO CONTEXT of this conversation.
+- When delegating, you MUST provide every detail, piece of context, and instruction the subagent needs in its task description.
+- Synthesize the subagents' final reports into a coherent response for the user.
 Current date and time:
 - Day of week: {{.DayOfWeek}}
 - Date/time (UTC): {{.DateTime}}
@@ -433,11 +446,9 @@ func main() {
 		}
 	}
 
-	// Build tools: all standard tools + delegate.
+	// Build base tools for subagents.
 	// FilterTools will exclude SearXNG/Vikunja if env vars aren't set.
-	// Memory and reminder tools are added per-chat in getOrCreate.
-	allTools := tools.AllWithDelegate(adapter, 2)
-	agentTools := yac.FilterTools(allTools)
+	baseTools := yac.FilterTools(tools.All())
 
 	// Memory directory: use YAC_MEMORY_DIR or default to ~/.yac/memories
 	memoryDir := os.Getenv("YAC_MEMORY_DIR")
@@ -451,7 +462,7 @@ func main() {
 
 	chats := newChatAgents(agentConfig{
 		adapter:           adapter,
-		tools:             agentTools,
+		baseTools:         baseTools,
 		memoryDir:         memoryDir,
 		telegram:          telegram,
 		reminderProjectID: reminderProjectID,
