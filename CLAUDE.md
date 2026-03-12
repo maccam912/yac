@@ -57,6 +57,7 @@ Single Go module (`github.com/maccam912/yac`). External dependencies: `godotenv`
 - `WebRequest()` — HTTP client tool (like curl) supporting GET, POST, PUT, DELETE, PATCH with custom headers and body
 - `SearXNG()` — web search via SearXNG instance. Requires `SEARXNG_URL` env var; only included if set (via `ShouldInclude`)
 - `VikunjaTools()` — task management via Vikunja API (list/get/create/update/delete). Requires `VIKUNJA_URL` and `VIKUNJA_API_KEY` env vars; only included if both are set. Lists show compact summaries (ID + title); full details require explicit get.
+- `MemoryTools(MemoryConfig)` — memory CRUD (create/list/search/recall/edit/remove) plus `ConsolidateMemories` for finding and merging duplicate memories in bulk.
 - `AgentTools(agent, memoryDir)` — standard agent-bound tools that need a live `*Agent`; currently provides `reset_conversation`.
 
 **Observability:**

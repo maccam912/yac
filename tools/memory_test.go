@@ -680,8 +680,8 @@ func TestRemoveMemoryMissingID(t *testing.T) {
 func TestMemoryToolsReturnsAll(t *testing.T) {
 	dir := tempMemoryDir(t)
 	tools := MemoryTools(MemoryConfig{Dir: dir})
-	if len(tools) != 6 {
-		t.Fatalf("expected 6 tools, got %d", len(tools))
+	if len(tools) != 7 {
+		t.Fatalf("expected 7 tools, got %d", len(tools))
 	}
 
 	names := make(map[string]bool)
@@ -689,7 +689,7 @@ func TestMemoryToolsReturnsAll(t *testing.T) {
 		names[tool.Name] = true
 	}
 
-	expected := []string{"create_memory", "list_memories", "search_memories", "recall_memory", "edit_memory", "remove_memory"}
+	expected := []string{"create_memory", "list_memories", "search_memories", "recall_memory", "edit_memory", "remove_memory", "consolidate_memories"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing tool: %s", name)

@@ -687,5 +687,6 @@ func MemoryTools(cfg MemoryConfig) []*yac.Tool {
 		RecallMemory(cfg),
 		EditMemory(cfg),
 		RemoveMemory(cfg),
+		ConsolidateMemories(cfg),
 	}
 }
